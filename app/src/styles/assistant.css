@@ -1052,3 +1052,24 @@
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   white-space: pre;
 }
+
+/* publik API: first-run card balance line, header status line, error actions. */
+.assistant-setup-intro .publik-balance,
+.ai-setup-card .publik-balance {
+  font-size: 1.15rem;
+  font-weight: 600;
+  margin: 0.25rem 0 0.5rem;
+}
+
+.assistant-publik-line {
+  margin: 0 1rem 0.5rem;
+  font-size: 0.8rem;
+  opacity: 0.75;
+}
+
+.assistant-error-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+}

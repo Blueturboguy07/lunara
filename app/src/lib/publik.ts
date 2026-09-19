@@ -58,12 +58,13 @@ export interface PublikInstall {
  * key minted there would burn the starter every tab), and an adult profile —
  * AI is hidden under 18 everywhere.
  */
-export async function publikAvailable(): Promise<boolean> {
+export async function publikAvailable(options: { assumeAdult?: boolean } = {}): Promise<boolean> {
   if (!publikBuildAvailable() || !isNative) return false
   if (nativePlatform !== 'ios' && nativePlatform !== 'android') return false
   const [status, birthYear] = await Promise.all([secureVaultStatus(), getSetting(SK.birthYear)])
   if (!status.available || status.persistence === 'memory') return false
-  return isAdultBirthYear(birthYear)
+  // Onboarding checks the typed year itself before SK.birthYear is saved.
+  return options.assumeAdult === true || isAdultBirthYear(birthYear)
 }
 
 /** True when a pk_ key is in the vault. Never reveals the key to the caller. */
@@ -123,11 +124,14 @@ export async function markPublikCardSeen(): Promise<void> {
 }
 
 function newInstallId(): string {
-  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID()
-  const b = crypto.getRandomValues(new Uint8Array(16))
+  // Capacitor serves a secure context (capacitor://localhost, https://localhost);
+  // the fallback covers an old Android WebView without randomUUID.
+  const c: Crypto = globalThis.crypto
+  if (typeof c.randomUUID === 'function') return c.randomUUID()
+  const b = c.getRandomValues(new Uint8Array(16))
   b[6] = (b[6] & 0x0f) | 0x40
   b[8] = (b[8] & 0x3f) | 0x80
-  const h = Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('')
+  const h = Array.from(b, (x: number) => x.toString(16).padStart(2, '0')).join('')
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`
 }
 
