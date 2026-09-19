@@ -26,4 +26,4 @@ jobs:
           node-version: 22
       - name: Run oracle
         shell: pwsh
-        run: ./scripts/bugfix-lab/publik-guide-pnpm-ignored-builds-windows.ps1 -PinSha "${{ inputs.pin_sha }}"
+        run: ./scripts/bugfix-lab/publik-guide-pnpm-ignored-builds-windows.ps1 -PinSha "${{ inputs.pin_sha || '91e7e9ebf96ae556a2016787fe007500033237e0' }}"
