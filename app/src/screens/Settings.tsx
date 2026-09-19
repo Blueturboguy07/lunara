@@ -21,6 +21,13 @@ import type { Envelope } from '../crypto/vault'
 import { applyImport, collectExport, decryptImport, encryptedExport, shareOrDownload } from '../db/transfer'
 import { pushBackup, restoreBackup } from '../lib/backup'
 import { localToday } from '../lib/dates'
+import {
+  disconnectPublik,
+  fetchPublikWallet,
+  hasPublikKey,
+  isAdultBirthYear,
+  publikStatusLine,
+} from '../lib/publik'
 import { addDays } from '../engine/cycle'
 import {
   parseReminderPreferences,
@@ -138,6 +145,8 @@ export function Settings() {
   const [status, setStatus] = useState<string | null>(null)
   const [hasOpenAiKey, setHasOpenAiKey] = useState(false)
   const [hasAnthropicKey, setHasAnthropicKey] = useState(false)
+  const [hasPublik, setHasPublik] = useState(false)
+  const [publikLine, setPublikLine] = useState('Ready')
   const [vaultLabel, setVaultLabel] = useState(isNative ? 'Checking…' : 'Session memory')
   const [biometrics, setBiometrics] = useState<BiometricStatus | null>(null)
   const [health, setHealth] = useState<HealthPlatformStatus | null>(null)
@@ -157,11 +166,20 @@ export function Settings() {
       getBiometricStatus(),
       getHealthPlatformStatus(),
       getWidgetStatus(),
+      hasPublikKey(),
     ])
-      .then(([openAiKey, anthropicKey, vault, biometricStatus, healthStatus, widgetStatus]) => {
+      .then(([openAiKey, anthropicKey, vault, biometricStatus, healthStatus, widgetStatus, publikKey]) => {
         if (!alive) return
         setHasOpenAiKey(Boolean(openAiKey))
         setHasAnthropicKey(Boolean(anthropicKey))
+        setHasPublik(publikKey)
+        if (publikKey) {
+          void fetchPublikWallet()
+            .then((wallet) => {
+              if (alive) setPublikLine(publikStatusLine(wallet))
+            })
+            .catch(() => undefined)
+        }
         setVaultLabel(
           vault.persistence === 'memory'
             ? 'Session memory'
@@ -190,6 +208,7 @@ export function Settings() {
       time,
       reminderSettings,
       profile,
+      birthYear,
     ] =
       await Promise.all([
         getSetting(SK.pregnancyLMP),
@@ -201,6 +220,7 @@ export function Settings() {
         getSetting(SK.reminderTime),
         getSetting(REMINDER_SETTINGS_KEY),
         getHealthProfile(),
+        getSetting(SK.birthYear),
       ])
     const pregnancyLmp = profile.reproductive.pregnancyLmp ?? legacyPregnancyLmp
     const pregnancyDating =
@@ -217,7 +237,9 @@ export function Settings() {
       pregnancyDating,
       hasPin: !!hasPin,
       biometricLock: biometricLock === '1',
-      provider: provider === 'openai' ? 'openai' : 'anthropic',
+      provider: provider === 'openai' ? 'openai' : provider === 'publik' ? 'publik' : 'anthropic',
+      // AI stays hidden under 18 everywhere; a profile without a birth year is not an adult.
+      adult: isAdultBirthYear(birthYear),
       endpoint: endpoint ?? '',
       recoveryCode: code ?? '',
       legacyReminderTime: time,
@@ -497,8 +519,16 @@ export function Settings() {
     }
   }
 
+  async function disconnectPublikApi() {
+    await disconnectPublik()
+    setHasPublik(false)
+    setPublikLine('Ready')
+    setStatus('publik API disconnected from this phone. Lunara AI will ask for a key or a reconnect next time.')
+  }
+
   async function removeAiKey() {
     const provider = s?.provider ?? 'anthropic'
+    if (provider === 'publik') return disconnectPublikApi()
     await deleteSecureSecret(
       provider === 'anthropic'
         ? SECURE_SECRET_KEYS.anthropicApiKey
@@ -648,6 +678,8 @@ export function Settings() {
 
   async function wipe() {
     if (!confirm('Delete ALL Lunara data on this device? This cannot be undone.')) return
+    // Revoke the publik key server-side first so a wiped phone does not leave a live key to idle out.
+    await disconnectPublik().catch(() => undefined)
     await clearSecureSecrets()
     await db.delete()
     location.reload()
@@ -1045,26 +1077,32 @@ export function Settings() {
         </div>
       </div>
 
-      <Section title="AI assistant">
-        <button className="setting-row" onClick={() => setAssistantOpen(true)}>
-          <span>Open Lunara AI</span>
-          <span className="muted">
-            {s.provider === 'anthropic'
-              ? hasAnthropicKey
-                ? 'Anthropic connected ›'
-                : 'add Anthropic key ›'
-              : hasOpenAiKey
-                ? 'OpenAI key secured ›'
-                : 'add OpenAI key ›'}
-          </span>
-        </button>
-        {(s.provider === 'anthropic' ? hasAnthropicKey : hasOpenAiKey) && (
-          <button className="setting-row" onClick={removeAiKey}>
-            <span>Remove saved credential</span>
-            <span className="muted">›</span>
+      {s.adult && (
+        <Section title="AI assistant">
+          <button className="setting-row" onClick={() => setAssistantOpen(true)}>
+            <span>Open Lunara AI</span>
+            <span className="muted">
+              {s.provider === 'publik'
+                ? hasPublik
+                  ? `publik API · ${publikLine} ›`
+                  : 'connect publik API ›'
+                : s.provider === 'anthropic'
+                  ? hasAnthropicKey
+                    ? 'Anthropic connected ›'
+                    : 'add Anthropic key ›'
+                  : hasOpenAiKey
+                    ? 'OpenAI key secured ›'
+                    : 'add OpenAI key ›'}
+            </span>
           </button>
-        )}
-      </Section>
+          {(s.provider === 'publik' ? hasPublik : s.provider === 'anthropic' ? hasAnthropicKey : hasOpenAiKey) && (
+            <button className="setting-row" onClick={removeAiKey}>
+              <span>{s.provider === 'publik' ? 'Disconnect publik API' : 'Remove saved credential'}</span>
+              <span className="muted">›</span>
+            </button>
+          )}
+        </Section>
+      )}
 
       <Section title="Danger zone">
         <button className="setting-row" onClick={wipe} style={{ color: 'var(--red-500)' }}>

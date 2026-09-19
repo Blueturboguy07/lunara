@@ -2,6 +2,7 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import { useState } from 'react'
 import { ARTICLES } from '../content/articles'
 import { db, getSetting, SK, type Goal } from '../db/schema'
+import { isAdultBirthYear } from '../lib/publikApi'
 import { useApp } from '../state/appStore'
 
 const GOAL_CATEGORY: Record<Goal, string> = {
@@ -24,11 +25,17 @@ export function Insights() {
   const { setArticleSlug, setAssistantOpen } = useApp()
   const [query, setQuery] = useState('')
   const data = useLiveQuery(async () => {
-    const [goal, bookmarks] = await Promise.all([
+    const [goal, bookmarks, birthYear] = await Promise.all([
       getSetting(SK.goal),
       db.contentBookmarks.toArray(),
+      getSetting(SK.birthYear),
     ])
-    return { goal: (goal ?? 'cycle') as Goal, saved: new Set(bookmarks.map((bookmark) => bookmark.slug)) }
+    return {
+      goal: (goal ?? 'cycle') as Goal,
+      saved: new Set(bookmarks.map((bookmark) => bookmark.slug)),
+      // The AI companion is adults-only everywhere, not just in onboarding.
+      adult: isAdultBirthYear(birthYear),
+    }
   }, [])
 
   const featured = data ? GOAL_CATEGORY[data.goal] : 'Cycle basics'
@@ -53,6 +60,7 @@ export function Insights() {
         <p>Calm explanations for the questions that rarely fit into a search bar.</p>
       </header>
 
+      {data?.adult && (
       <button className="assistant-feature" onClick={() => setAssistantOpen(true)}>
         <span className="assistant-constellation" aria-hidden="true">
           <i className="constellation-orbit orbit-a" />
@@ -72,6 +80,7 @@ export function Insights() {
           </svg>
         </span>
       </button>
+      )}
 
       <div className="insights-search">
         <svg viewBox="0 0 24 24" aria-hidden="true">

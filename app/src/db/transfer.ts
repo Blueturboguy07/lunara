@@ -1,8 +1,20 @@
 import { decryptJSON, encryptJSON, type Envelope } from '../crypto/vault'
 import { db, SK, type ContentBookmark, type DailyLog, type Setting } from './schema'
 
-/** Settings that must never leave the device. */
-const SECRET_KEYS: string[] = [SK.pinSalt, SK.pinHash, SK.aiKey]
+/**
+ * Settings that must never leave the device. The publik install id is the
+ * handle for one phone's key: restoring it on a second phone would replay the
+ * first phone's install and get no key. The claim link and state go with it.
+ */
+export const SECRET_KEYS: string[] = [
+  SK.pinSalt,
+  SK.pinHash,
+  SK.aiKey,
+  SK.publikInstallId,
+  SK.publikClaimUrl,
+  SK.publikClaimState,
+  SK.publikCardSeen,
+]
 
 export interface ExportPayload {
   app: 'lunara'

@@ -26,6 +26,8 @@ export interface SecureVaultStatus {
 export const SECURE_SECRET_KEYS = {
   openAiApiKey: 'openai-api-key',
   anthropicApiKey: 'anthropic-api-key',
+  /** The pk_ key minted by POST /installs; publik API's only secret on this phone. */
+  publikApiKey: 'publik-api-key',
 } as const
 
 const LunaraNative = getLunaraNativeBridge<LunaraNativeVaultPlugin>()

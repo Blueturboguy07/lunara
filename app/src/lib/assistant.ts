@@ -1,5 +1,15 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { providerFetch } from './providerFetch'
+import {
+  DEFAULT_PUBLIK_ENDPOINT,
+  PublikApiError,
+  publikErrorFrom,
+  publikUnreachable,
+  readPublikUsage,
+  resolvePublikModel,
+  type PublikEndpoint,
+  type PublikUsage,
+} from './publikApi'
 
 /**
  * Consent-scoped, bring-your-own-provider assistant transport.
@@ -23,7 +33,14 @@ export interface ChatMessage {
   content: string
 }
 
-export type AssistantProvider = 'anthropic' | 'openai'
+/**
+ * 'publik' — publik API, the shipped default: the OpenAI Responses dialect
+ *   through https://publikhq.com/api/v1 with the pk_ key minted for this
+ *   phone. 'anthropic' and 'openai' are the bring-your-own-key slots and are
+ *   never touched by the publik path.
+ */
+export type AssistantProvider = 'publik' | 'anthropic' | 'openai'
+export type VendorProvider = Exclude<AssistantProvider, 'publik'>
 
 /**
  * How an Anthropic credential authenticates.
@@ -46,8 +63,16 @@ export interface AssistantConfig {
   /** Kept in the native secure vault by the UI; never written to the cycle database. */
   apiKey?: string
   model: string
-  /** OpenAI-compatible base URL. */
+  /** OpenAI-compatible base URL. A user-owned BYO override; never the gateway. */
   baseUrl?: string
+  /** publik only: what POST /installs announced (base_url, models). Defaults to the compiled values. */
+  publik?: PublikEndpoint
+}
+
+export interface AssistantReply {
+  text: string
+  /** Set on the publik provider: the x-publik-* headers of this call. */
+  publik?: PublikUsage
 }
 
 export type ApprovedAssistantContext = Record<string, unknown>
@@ -86,7 +111,7 @@ The following JSON contains only tracker categories the user explicitly approved
 ${JSON.stringify(approvedContext)}`
 }
 
-function apiError(provider: AssistantProvider, status: number): Error {
+function apiError(provider: VendorProvider, status: number): Error {
   if (status === 401 || status === 403) {
     return new Error(
       provider === 'openai'
@@ -188,52 +213,91 @@ function extractOpenAIText(payload: unknown): string {
     .trim()
 }
 
-async function askOpenAI(
+/**
+ * The OpenAI Responses dialect, for both the user's own OpenAI key and publik
+ * API. The request body is identical; the endpoint, the default model and the
+ * error path differ. The gateway's base already ends in /api/v1; the vendor's
+ * is host-only, so the publik endpoint is computed from its own base and
+ * never from `config.baseUrl`.
+ */
+async function askResponses(
   config: AssistantConfig,
   history: ChatMessage[],
   approvedContext: ApprovedAssistantContext | undefined,
   fetchImpl: FetchLike,
-): Promise<string> {
-  if (!config.apiKey?.trim()) throw new Error('Add an OpenAI API key before sending a message.')
-  const baseUrl = cleanBaseUrl(config.baseUrl || 'https://api.openai.com')
-  const response = await fetchImpl(`${baseUrl}/v1/responses`, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      authorization: `Bearer ${config.apiKey.trim()}`,
-    },
-    body: JSON.stringify({
-      model: config.model || DEFAULT_OPENAI_MODEL,
-      instructions: contextInstructions(approvedContext),
-      input: boundedHistory(history).map((message) => ({
-        role: message.role,
-        content: message.content,
-      })),
-      reasoning: { effort: 'low' },
-      text: { verbosity: 'low' },
-      max_output_tokens: 1200,
-      store: false,
-    }),
-  })
+): Promise<AssistantReply> {
+  const publik = config.provider === 'publik'
+  const key = config.apiKey?.trim()
+  if (!key) {
+    throw publik
+      ? new PublikApiError('disconnected', 'publik API is not connected on this phone. Connect it in AI settings, or use your own key.')
+      : new Error('Add an OpenAI API key before sending a message.')
+  }
+  const endpoint = publik
+    ? `${(config.publik ?? DEFAULT_PUBLIK_ENDPOINT).baseUrl}/responses`
+    : `${cleanBaseUrl(config.baseUrl || 'https://api.openai.com')}/v1/responses`
+  const model = publik
+    ? resolvePublikModel(config.model, config.publik ?? DEFAULT_PUBLIK_ENDPOINT)
+    : config.model || DEFAULT_OPENAI_MODEL
+
+  let response: Response
+  try {
+    response = await fetchImpl(endpoint, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${key}`,
+      },
+      body: JSON.stringify({
+        model,
+        instructions: contextInstructions(approvedContext),
+        input: boundedHistory(history).map((message) => ({
+          role: message.role,
+          content: message.content,
+        })),
+        reasoning: { effort: 'low' },
+        text: { verbosity: 'low' },
+        max_output_tokens: 1200,
+        store: false,
+      }),
+    })
+  } catch (reason) {
+    if (publik) throw publikUnreachable()
+    throw reason
+  }
 
   if (!response.ok) {
+    // publik's own envelope carries no echoed credential or health context;
+    // a vendor body is never read.
+    if (publik) throw await publikErrorFrom(response)
     await response.body?.cancel().catch(() => undefined)
     throw apiError('openai', response.status)
   }
+  const usage = publik ? readPublikUsage(response.headers) : undefined
   const text = extractOpenAIText(await response.json())
-  if (!text) throw new Error('OpenAI returned no readable text.')
-  return text
+  if (!text) throw new Error(publik ? 'publik API returned no readable text.' : 'OpenAI returned no readable text.')
+  return usage ? { text, publik: usage } : { text }
 }
 
+export async function askAssistantDetailed(
+  config: AssistantConfig,
+  history: ChatMessage[],
+  approvedContext?: ApprovedAssistantContext,
+  fetchImpl: FetchLike = providerFetch,
+): Promise<AssistantReply> {
+  if (history.length === 0) throw new Error('Write a message first.')
+  if (config.provider === 'anthropic') {
+    return { text: await askAnthropic(config, history, approvedContext, fetchImpl) }
+  }
+  return askResponses(config, history, approvedContext, fetchImpl)
+}
+
+/** Unchanged signature for existing callers and tests. */
 export async function askAssistant(
   config: AssistantConfig,
   history: ChatMessage[],
   approvedContext?: ApprovedAssistantContext,
   fetchImpl: FetchLike = providerFetch,
 ): Promise<string> {
-  if (history.length === 0) throw new Error('Write a message first.')
-  if (config.provider === 'anthropic') {
-    return askAnthropic(config, history, approvedContext, fetchImpl)
-  }
-  return askOpenAI(config, history, approvedContext, fetchImpl)
+  return (await askAssistantDetailed(config, history, approvedContext, fetchImpl)).text
 }

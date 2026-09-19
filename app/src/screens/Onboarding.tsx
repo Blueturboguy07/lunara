@@ -1,4 +1,5 @@
-import { Children, isValidElement, type ReactNode, useMemo, useState } from 'react'
+import { Browser } from '@capacitor/browser'
+import { Children, isValidElement, type ReactNode, useEffect, useMemo, useState } from 'react'
 import { LunaraMark } from '../components/LunaraMark'
 import {
   createDefaultHealthProfile,
@@ -23,6 +24,19 @@ import {
   type AssistantProvider,
 } from '../lib/assistant'
 import { localToday } from '../lib/dates'
+import {
+  DEFAULT_PUBLIK_MODEL,
+  markPublikCardSeen,
+  provisionPublik,
+  PUBLIK_BUILD,
+  PUBLIK_DATA_PATH,
+  PUBLIK_WHY_IT_COSTS,
+  publikAvailable,
+  publikBalanceLine,
+  publikLinkButtonLabel,
+  PublikApiError,
+  type PublikInstall,
+} from '../lib/publik'
 import { addDays, toEpochDay } from '../engine/cycle'
 import {
   resolvePregnancyDating,
@@ -444,6 +458,11 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
   const [apiKey, setApiKey] = useState('')
   const [model, setModel] = useState(DEFAULT_ANTHROPIC_MODEL)
   const [baseUrl, setBaseUrl] = useState('')
+  // publik API: offered only on a native, adult, token-carrying build; preselected when it is.
+  const [publikHere, setPublikHere] = useState(false)
+  const [publikBusy, setPublikBusy] = useState(false)
+  const [publikError, setPublikError] = useState<string | null>(null)
+  const [publikInstall, setPublikInstall] = useState<PublikInstall | null>(null)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
   const [healthImportBusy, setHealthImportBusy] = useState(false)
@@ -458,6 +477,23 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
     age !== null &&
     birth >= thisYear - 100 &&
     birth <= thisYear - 13
+
+  const adult = age !== null && age >= 18
+  useEffect(() => {
+    // publikAvailable() also checks SK.birthYear, which is not saved until finish();
+    // the step itself is gated on the typed year, so only the build/vault checks matter here.
+    if (!adult) return
+    let alive = true
+    void publikAvailable({ assumeAdult: true }).then((ok) => {
+      if (!alive || !ok) return
+      setPublikHere(true)
+      setProvider((current) => (current === 'anthropic' && !apiKey.trim() ? 'publik' : current))
+      setModel((current) => (current === DEFAULT_ANTHROPIC_MODEL ? DEFAULT_PUBLIK_MODEL : current))
+    })
+    return () => {
+      alive = false
+    }
+  }, [adult])
 
   const hormonalMethod = HORMONAL_METHODS.has(draft.contraception)
   const steps = useMemo<StepId[]>(() => {
@@ -533,11 +569,47 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
   function chooseProvider(nextProvider: AssistantProvider) {
     setProvider(nextProvider)
     setBaseUrl('')
-    if (nextProvider === 'anthropic') {
+    setPublikError(null)
+    if (nextProvider === 'publik') {
+      setModel(DEFAULT_PUBLIK_MODEL)
+    } else if (nextProvider === 'anthropic') {
       setModel(DEFAULT_ANTHROPIC_MODEL)
     } else {
       setModel(DEFAULT_OPENAI_MODEL)
     }
+  }
+
+  /**
+   * "Continue with publik API": the disclosure above was read, so this is the
+   * consent moment — POST /installs runs now, and the first-run card with the
+   * real balance follows on the same screen (CONTRACT §12.1). The birth year is
+   * saved first because publikAvailable() reads it. A failure never blocks
+   * setup: Lunara AI offers Connect again.
+   */
+  async function connectPublik() {
+    setPublikBusy(true)
+    setPublikError(null)
+    try {
+      await setSetting(SK.birthYear, draft.birthYear)
+      const install = await provisionPublik()
+      setPublikInstall(install)
+      await setSetting(SK.publikDisclosureVersion, String(PUBLIK_BUILD.disclosureVersion))
+    } catch (reason) {
+      setPublikError(
+        reason instanceof PublikApiError
+          ? `${reason.message} You can connect publik API later from Lunara AI.`
+          : reason instanceof Error
+            ? reason.message
+            : 'Could not connect publik API. You can try again later from Lunara AI.',
+      )
+    } finally {
+      setPublikBusy(false)
+    }
+  }
+
+  async function continueFromPublikCard() {
+    await markPublikCardSeen()
+    next()
   }
 
   async function importApplePeriodsDuringOnboarding() {
@@ -691,7 +763,16 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
               state:
                 age !== null &&
                 age >= 18 &&
-                apiKey.trim().length > 0
+                (provider === 'publik' ? publikInstall !== null : apiKey.trim().length > 0)
+                  ? 'granted'
+                  : 'not-requested',
+              version: 1,
+              decidedAt,
+            },
+            {
+              purpose: 'publik-api',
+              state:
+                age !== null && age >= 18 && provider === 'publik' && publikInstall !== null
                   ? 'granted'
                   : 'not-requested',
               version: 1,
@@ -720,9 +801,13 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         setSetting(
           SK.aiModel,
           model.trim() ||
-            (provider === 'anthropic' ? DEFAULT_ANTHROPIC_MODEL : DEFAULT_OPENAI_MODEL),
+            (provider === 'publik'
+              ? DEFAULT_PUBLIK_MODEL
+              : provider === 'anthropic'
+                ? DEFAULT_ANTHROPIC_MODEL
+                : DEFAULT_OPENAI_MODEL),
         ),
-        setSetting(SK.aiBaseUrl, baseUrl.trim()),
+        setSetting(SK.aiBaseUrl, provider === 'publik' ? '' : baseUrl.trim()),
       ])
 
       if (draft.goal === 'pregnancy' && pregnancyDating) {
@@ -738,7 +823,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         }
       }
 
-      if (apiKey.trim()) {
+      if (provider !== 'publik' && apiKey.trim()) {
         await setSecureSecret(
           provider === 'anthropic'
             ? SECURE_SECRET_KEYS.anthropicApiKey
@@ -1468,9 +1553,20 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         <QuestionIntro
           eyebrow="AI is separate from prediction"
           title="Choose how the assistant runs."
-          body="Core tracking and calculations work without AI. You bring your own credential; Lunara never ships a shared key."
+          body={
+            publikHere
+              ? 'Core tracking and calculations work without AI. The assistant runs on publik API unless you bring your own key.'
+              : 'Core tracking and calculations work without AI. You bring your own credential.'
+          }
         />
         <div className="ai-provider-grid">
+          {publikHere && (
+            <OptionCard
+              option={{ id: 'publik', icon: '◐', label: 'publik API', detail: 'No account, no key. Free starter usage, then priced per use.' }}
+              selected={provider === 'publik'}
+              onClick={() => chooseProvider('publik')}
+            />
+          )}
           <OptionCard
             option={{ id: 'anthropic', icon: '✳', label: 'Anthropic', detail: 'An API key, or a token from `claude setup-token` to use your Claude subscription.' }}
             selected={provider === 'anthropic'}
@@ -1482,7 +1578,37 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
             onClick={() => chooseProvider('openai')}
           />
         </div>
-        {provider === 'anthropic' ? (
+        {provider === 'publik' && publikInstall ? (
+          <div className="card ai-setup-card">
+            <p className="microcopy"><strong>Lunara AI is ready.</strong></p>
+            <p className="publik-balance">{publikBalanceLine(publikInstall.balanceMicros, publikInstall.claimState)}</p>
+            <p className="microcopy">{publikInstall.costSentence ?? PUBLIK_WHY_IT_COSTS}</p>
+            <p className="microcopy">{PUBLIK_DATA_PATH}</p>
+            {publikInstall.claimUrl && (
+              <button className="cta" onClick={() => void Browser.open({ url: publikInstall.claimUrl as string })}>
+                {publikLinkButtonLabel(publikInstall.claimState)}
+              </button>
+            )}
+          </div>
+        ) : provider === 'publik' ? (
+          <div className="card ai-setup-card">
+            <p className="microcopy"><strong>Lunara AI uses publik API.</strong></p>
+            <p className="microcopy">
+              <strong>Cost.</strong> {PUBLIK_WHY_IT_COSTS} Every new phone starts with free usage and no
+              card; most people spend under $2 a month.
+            </p>
+            <p className="microcopy">
+              <strong>Where your messages go.</strong> {PUBLIK_DATA_PATH}
+            </p>
+            <p className="microcopy">
+              By continuing you agree to the{' '}
+              <a href="https://publikhq.com/developers#why" target="_blank" rel="noreferrer">publik API terms</a>.
+              You can switch to your own key at any time in AI settings.
+            </p>
+            {publikError && <p className="microcopy" role="alert">{publikError}</p>}
+            <button className="text-button" onClick={() => chooseProvider('anthropic')}>Use my own key instead</button>
+          </div>
+        ) : provider === 'anthropic' ? (
           <div className="card ai-setup-card">
             <div className="field">
               <label htmlFor="anthropic-key">Anthropic API key or CLI token</label>
@@ -1539,9 +1665,19 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
             <p className="microcopy">Use a dedicated project key with a spending limit. Never paste a personal or reused secret into screenshots or chat.</p>
           </div>
         )}
-        <button className="cta" onClick={next}>
-          {apiKey.trim() ? 'Continue' : 'Connect later'}
-        </button>
+        {provider === 'publik' && publikInstall ? (
+          <button className="cta" onClick={() => void continueFromPublikCard()}>
+            {publikInstall.claimState === 'claimed' ? 'Continue' : 'Not now — keep the free starter'}
+          </button>
+        ) : provider === 'publik' ? (
+          <button className="cta" onClick={() => void connectPublik()} disabled={publikBusy}>
+            {publikBusy ? 'Connecting publik API…' : 'Continue with publik API'}
+          </button>
+        ) : (
+          <button className="cta" onClick={next}>
+            {apiKey.trim() ? 'Continue' : 'Connect later'}
+          </button>
+        )}
       </Frame>
     )
   }
