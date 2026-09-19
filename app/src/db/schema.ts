@@ -188,6 +188,7 @@ export type ConsentPurpose =
   | 'assistant-sharing'
   | 'health-import'
   | 'notifications'
+  | 'publik-api'
 
 export interface ConsentDecision {
   purpose: ConsentPurpose
@@ -672,6 +673,20 @@ export const SK = {
   aiConsent: 'aiConsent',
   /** 'strict' (zero data retention) or 'standard' (no-training only). */
   aiPrivacyTier: 'aiPrivacyTier',
+  /**
+   * publik API (non-secret; the pk_ key itself lives in the native vault).
+   * The install id, claim link and claim state are device-bound and are
+   * excluded from backups (transfer.ts); the rest may travel.
+   */
+  publikInstallId: 'publikInstallId',
+  publikClaimUrl: 'publikClaimUrl',
+  publikClaimState: 'publikClaimState',
+  publikBaseUrl: 'publikBaseUrl',
+  publikModels: 'publikModels',
+  publikStarterMicros: 'publikStarterMicros',
+  publikCostSentence: 'publikCostSentence',
+  publikCardSeen: 'publikCardSeen',
+  publikDisclosureVersion: 'publikDisclosureVersion',
   backupEndpoint: 'backupEndpoint',
   reminderEmail: 'reminderEmail',
   reminderTime: 'reminderTime',
