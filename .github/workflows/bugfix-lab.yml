@@ -7,6 +7,12 @@ on:
         description: "Commit to check out before running the guide step (defaults to the guide's current sourceCommit)"
         required: false
         default: "91e7e9ebf96ae556a2016787fe007500033237e0"
+  # workflow_dispatch 404s until this file has run once on this ref (GitHub
+  # constraint: dispatch needs the workflow already registered). `push` lets
+  # the first run happen via a plain git push; after that, `gh workflow run`
+  # by name works too. Scoped to this cluster's exact branch name only.
+  push:
+    branches: [fix/publik-guide-pnpm-ignored-builds-windows]
 
 jobs:
   oracle:
