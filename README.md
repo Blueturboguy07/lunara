@@ -67,6 +67,19 @@ pnpm --filter @lunara/app native:sync
 iOS and Android projects. **Re-run it after every code change** — the native
 shells load a copied bundle, not your live source.
 
+**AI assistant.** Lunara AI runs on **publik API** by default: no account and
+no key, free starter usage to begin with, then every request is priced per use
+at 50% of the model's published list price from your publik balance — the AI
+model behind it is run by a provider that charges per use, publik passes that
+on at half list, nothing is charged behind your back, and every call is visible
+on your publik dashboard. Only your message and the tracker categories you tick
+are sent, through publik's servers to a shared model account; publik never
+trains on them and does not store them. Prefer your own provider? Pick
+Anthropic or OpenAI in AI settings and paste your own key — it stays in your
+phone's Keychain or Keystore. Building a private copy? Put
+`VITE_PUBLIK_APP_TOKEN=pat_lunara_…` in `app/.env.native` before
+`native:sync` (or in `app/.env.production` for `pnpm build`).
+
 ### 3a. iPhone (requires a Mac)
 
 1. Install **Xcode** from the Mac App Store, then open it once so it finishes
@@ -139,18 +152,32 @@ The cycle engine is covered by a seeded fuzz audit
 estimate across 360 generated histories. It must stay at zero violations —
 run `pnpm test` before touching any prediction math.
 
-## The AI companion is optional and bring-your-own-key
+## The AI companion is optional, adults-only, and publik API by default
 
-Lunara ships no shared API key and works fully without AI. If you enable it, you
-supply your own credential:
+Lunara works fully without AI, and the companion is never offered under 18.
+When it is on, answers come from one of three places:
 
-- **Anthropic** — an API key, or a token from `claude setup-token` to bill
-  answers to a Claude subscription instead of API credits.
-- **OpenAI** — a project API key.
+- **publik API** (default) — no account, no key. The app mints its own
+  per-phone key from publik on first launch, after you accept the disclosure,
+  and keeps it in the iOS Keychain / Android Keystore. Free starter usage,
+  then priced per use from your publik balance; link the phone at the claim
+  link to pick a plan or add a pack. Disconnect at any time from Settings.
+- **Anthropic** — your own API key, or a token from `claude setup-token` to
+  bill answers to a Claude subscription.
+- **OpenAI** — your own project API key.
 
-Credentials are stored in the iOS Keychain / Android Keystore, never in the
-cycle database and never in a backup. Nothing from your tracker is sent unless
-you tick the specific categories for that message.
+Choosing publik never touches a key you pasted, and choosing your own key never
+revokes the publik one. Credentials are stored in the Keychain / Keystore, never
+in the cycle database and never in a backup. Nothing from your tracker is sent
+unless you tick the specific categories for that message.
+
+**For maintainers — the app token.** `app/src/lib/publikBuild.ts` carries the
+build's public app token. In git it is the placeholder `pat_lunara_REPLACE_ME`,
+which compiles and tests but hides the publik option; the publik-side mint
+script (`scripts/mint-app-token.mts` in the publik repo) mints
+`pat_lunara_<32 base36>` and writes it into that file in the same commit the
+publik install guide then pins. The token is public by design: it can only
+mint rate-limited anonymous installs; it holds no balance and reads nothing.
 
 ## Disclaimer
 
