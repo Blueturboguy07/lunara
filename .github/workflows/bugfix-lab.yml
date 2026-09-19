@@ -1,0 +1,23 @@
+name: bugfix-lab oracle (publik-guide-pnpm-ignored-builds-windows)
+
+on:
+  workflow_dispatch:
+    inputs:
+      pin_sha:
+        description: "Commit to check out before running the guide step (defaults to the guide's current sourceCommit)"
+        required: false
+        default: "91e7e9ebf96ae556a2016787fe007500033237e0"
+
+jobs:
+  oracle:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Run oracle
+        shell: pwsh
+        run: ./scripts/bugfix-lab/publik-guide-pnpm-ignored-builds-windows.ps1 -PinSha "${{ inputs.pin_sha }}"
