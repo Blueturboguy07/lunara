@@ -9,7 +9,7 @@
  * Lunara has no binary and no CI release — the reviewed commit pinned by the
  * publik guide IS the release — so the token is committed here, in the open.
  *
- * `pat_lunara_REPLACE_ME` is a placeholder. A publik-side script
+ * `pat_lunara_x49sudxqfhc9s0vgssy48apq9r8eqiex` is a placeholder. A publik-side script
  * (`scripts/mint-app-token.mts` in the publik repo) mints the real
  * `pat_lunara_<32 base36>` token and replaces the placeholder in this file in
  * the same commit that the publik guide then pins. Until that happens, a
@@ -22,7 +22,7 @@
  *   `pnpm native:sync`, which builds with `--mode native`) or in
  *   `app/.env.production` (read by `pnpm build`). Both files are gitignored.
  */
-export const PUBLIK_APP_TOKEN_PLACEHOLDER = 'pat_lunara_REPLACE_ME'
+export const PUBLIK_APP_TOKEN_PLACEHOLDER = 'pat_lunara_x49sudxqfhc9s0vgssy48apq9r8eqiex'
 
 const envToken = (import.meta.env.VITE_PUBLIK_APP_TOKEN as string | undefined)?.trim()
 
