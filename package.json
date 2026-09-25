@@ -7,6 +7,8 @@
     "dev": "pnpm --filter @lunara/app dev",
     "build": "pnpm --filter @lunara/app build",
     "test": "pnpm --filter @lunara/app test",
-    "preview": "pnpm --filter @lunara/app preview"
+    "preview": "pnpm --filter @lunara/app preview",
+    "build:apk": "pnpm --filter @lunara/app native:android:build",
+    "build:apk:release": "pnpm --filter @lunara/app native:android:release"
   }
 }

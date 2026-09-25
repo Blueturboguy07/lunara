@@ -5,6 +5,8 @@ node_modules/
 # Build output
 dist/
 dev-dist/
+dist-apk/
+*.apk
 coverage/
 .wrangler/
 *.tsbuildinfo

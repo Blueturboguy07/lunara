@@ -12,6 +12,7 @@
     "native:android": "pnpm native:sync && cap open android",
     "native:ios:build": "pnpm native:sync && xcodebuild -project ios/App/App.xcodeproj -scheme App -sdk iphonesimulator -configuration Debug -derivedDataPath ios/DerivedData CODE_SIGNING_ALLOWED=NO build",
     "native:android:build": "pnpm native:sync && cd android && GRADLE_USER_HOME=.gradle ./gradlew assembleDebug",
+    "native:android:release": "pnpm native:sync && cd android && GRADLE_USER_HOME=.gradle ./gradlew assembleRelease",
     "native:doctor": "cap doctor",
     "preview": "vite preview",
     "test": "vitest run"

@@ -1,0 +1,248 @@
+# Builds the Android APK from source and publishes it to GitHub Releases.
+#
+# Triggers:
+#   - Push of a version tag (v*) -- creates a production release
+#   - workflow_dispatch           -- manual trigger for ad-hoc releases
+#
+# Optional secrets (set in repo Settings -> Secrets -> Actions):
+#   ANDROID_KEYSTORE_BASE64    base64-encoded release keystore
+#   ANDROID_KEYSTORE_PASSWORD  store password
+#   ANDROID_KEY_ALIAS          key alias inside the keystore
+#   ANDROID_KEY_PASSWORD       key password
+#
+# A signed release APK is only built when all four ANDROID_KEYSTORE_* secrets
+# are configured. Without them the workflow still succeeds: it builds and
+# publishes the debug APK only, so the pipeline never fails just because a
+# release keystore hasn't been set up yet.
+
+name: Android Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Release tag (e.g. v0.1.0)"
+        required: true
+        default: "v0.1.0"
+      prerelease:
+        description: "Mark as pre-release?"
+        type: boolean
+        default: true
+      draft:
+        description: "Save as draft?"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-apk:
+    name: Build & Release APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      # ── Checkout ──────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4.2.2
+        with:
+          fetch-depth: 0
+
+      # ── Resolve release tag ───────────────────────────────────────────────
+      - name: Set RELEASE_TAG
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "RELEASE_TAG=${{ github.ref_name }}" >> "$GITHUB_ENV"
+          else
+            echo "RELEASE_TAG=${{ inputs.tag_name }}" >> "$GITHUB_ENV"
+          fi
+
+      # ── Decide whether we have a real release keystore ──────────────────────
+      # Secrets can't be read directly in step `if:` conditions reliably, so we
+      # resolve this once into a plain env var and gate every signing-related
+      # step off that instead.
+      - name: Check for release keystore secrets
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ] && [ -n "$ANDROID_KEYSTORE_PASSWORD" ] && \
+             [ -n "$ANDROID_KEY_ALIAS" ] && [ -n "$ANDROID_KEY_PASSWORD" ]; then
+            echo "HAS_KEYSTORE=true" >> "$GITHUB_ENV"
+          else
+            echo "HAS_KEYSTORE=false" >> "$GITHUB_ENV"
+            echo "::notice::No ANDROID_KEYSTORE_* secrets configured — this run will build and publish the debug APK only (no signed release APK)."
+          fi
+
+      # ── Node.js + pnpm ────────────────────────────────────────────────────
+      - name: Set up Node.js
+        uses: actions/setup-node@v4.4.0
+        with:
+          node-version: "22"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4.1.0
+        with:
+          version: "latest"
+          run_install: false
+
+      - name: Get pnpm store directory
+        id: pnpm-cache
+        run: echo "STORE_PATH=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4.2.3
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # ── Java & Android SDK ────────────────────────────────────────────────
+      - name: Set up Java 21 (Temurin)
+        uses: actions/setup-java@v5
+        with:
+          distribution: "temurin"
+          java-version: "21"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3.2.2
+
+      - name: Cache Gradle files
+        uses: gradle/actions/setup-gradle@v4.4.1
+        with:
+          gradle-home-cache-cleanup: true
+
+      # ── Run test suite ────────────────────────────────────────────────────
+      - name: Run test suite
+        run: pnpm test
+
+      # ── Build web bundle & sync to Android ────────────────────────────────
+      - name: Build web bundle (native mode)
+        working-directory: app
+        run: pnpm build:native
+
+      - name: Sync web assets into Android project
+        working-directory: app
+        run: npx cap sync android
+
+      # ── Keystore setup (release builds only) ─────────────────────────────
+      - name: Prepare signing keystore
+        if: env.HAS_KEYSTORE == 'true'
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          KEYSTORE_PATH="${RUNNER_TEMP}/lunara.keystore"
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
+          echo "KEYSTORE_PATH=$KEYSTORE_PATH" >> "$GITHUB_ENV"
+
+      # ── Build APKs ────────────────────────────────────────────────────────
+      # The release build only runs, and is only signed, when real keystore
+      # secrets are present. app/android/app/build.gradle only wires up a
+      # signingConfig when these same -Pandroid.injected.signing.* properties
+      # are supplied, so this never produces a falsely-labeled "release" APK
+      # that is actually unsigned.
+      - name: Build signed Release APK
+        if: env.HAS_KEYSTORE == 'true'
+        working-directory: app/android
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          ./gradlew assembleRelease \
+            -Pandroid.injected.signing.store.file="$KEYSTORE_PATH" \
+            -Pandroid.injected.signing.store.password="$ANDROID_KEYSTORE_PASSWORD" \
+            -Pandroid.injected.signing.key.alias="$ANDROID_KEY_ALIAS" \
+            -Pandroid.injected.signing.key.password="$ANDROID_KEY_PASSWORD"
+
+      - name: Build Debug APK
+        working-directory: app/android
+        run: ./gradlew assembleDebug
+
+      # ── Stage release assets ──────────────────────────────────────────────
+      - name: Rename APKs and generate checksums
+        run: |
+          DEBUG_APK="Lunara-debug.apk"
+          cp app/android/app/build/outputs/apk/debug/app-debug.apk "$DEBUG_APK"
+          echo "DEBUG_APK=$DEBUG_APK" >> "$GITHUB_ENV"
+
+          if [ "$HAS_KEYSTORE" = "true" ]; then
+            RELEASE_APK="Lunara.apk"
+            cp app/android/app/build/outputs/apk/release/app-release.apk "$RELEASE_APK"
+            sha256sum "$RELEASE_APK" "$DEBUG_APK" > SHA256SUMS.txt
+            echo "RELEASE_APK=$RELEASE_APK" >> "$GITHUB_ENV"
+          else
+            sha256sum "$DEBUG_APK" > SHA256SUMS.txt
+          fi
+
+      # ── Release notes ─────────────────────────────────────────────────────
+      - name: Write release notes
+        run: |
+          if [ "$HAS_KEYSTORE" = "true" ]; then
+            cat > RELEASE_BODY.md <<EOF
+          ## Install on Android
+
+          1. Download **${RELEASE_APK}** below.
+          2. On your Android phone go to **Settings → Install unknown apps** and allow your browser or file manager to install APKs.
+          3. Open the downloaded file and tap **Install**.
+
+          > **Note:** This APK is sideloaded — it is not from the Google Play Store.
+          > Verify the download with \`SHA256SUMS.txt\` if you want to confirm integrity.
+
+          ---
+          *Built from [\`${GITHUB_SHA}\`](https://github.com/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}) by GitHub Actions.*
+          EOF
+          else
+            cat > RELEASE_BODY.md <<EOF
+          ## Debug build only
+
+          No release keystore secrets are configured for this repository, so this
+          run only produced the **debug** APK (\`${DEBUG_APK}\`), signed with the
+          default Android debug key. It installs fine for testing, but Android
+          debug-signed builds should not be treated as a production release.
+
+          To publish a properly signed release APK, add the \`ANDROID_KEYSTORE_BASE64\`,
+          \`ANDROID_KEYSTORE_PASSWORD\`, \`ANDROID_KEY_ALIAS\` and \`ANDROID_KEY_PASSWORD\`
+          secrets in repo Settings → Secrets and Actions, then re-run this workflow.
+
+          ---
+          *Built from [\`${GITHUB_SHA}\`](https://github.com/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}) by GitHub Actions.*
+          EOF
+          fi
+
+      # ── Upload to workflow artifacts (always accessible) ──────────────────
+      - name: Upload APKs to workflow artifacts
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: lunara-apks-${{ env.RELEASE_TAG }}
+          path: |
+            ${{ env.DEBUG_APK }}
+            ${{ env.RELEASE_APK }}
+            SHA256SUMS.txt
+          if-no-files-found: warn
+          retention-days: 90
+
+      # ── Publish GitHub Release ────────────────────────────────────────────
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2.3.2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: "Lunara ${{ env.RELEASE_TAG }}"
+          prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || false }}
+          draft: ${{ github.event_name == 'workflow_dispatch' && inputs.draft || false }}
+          generate_release_notes: true
+          body_path: RELEASE_BODY.md
+          files: |
+            ${{ env.DEBUG_APK }}
+            ${{ env.RELEASE_APK }}
+            SHA256SUMS.txt

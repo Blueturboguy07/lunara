@@ -28,8 +28,24 @@ Lunara is an open-source alternative to Flo®. It is not affiliated with, endors
 
 ## Getting Lunara onto your phone
 
-There is no download. You compile the app on a computer and install it on your
-own phone over a cable. **What you need depends on the phone you have:**
+### Android — download the APK directly
+
+The easiest way to get Lunara on an **Android** phone is to download the
+pre-built APK from [GitHub Releases](https://github.com/Blueturboguy07/lunara/releases/latest):
+
+1. On your phone, open the Releases page and tap the `.apk` file to download it.
+2. Go to **Settings → Install unknown apps** and allow your browser or file
+   manager to install APKs.
+3. Open the downloaded `.apk` and tap **Install**.
+
+> Verify the download against `SHA256SUMS.txt` in the same release if you want
+> to confirm file integrity before installing.
+
+### Build from source
+
+If you want to compile the app yourself (required for iPhone, or if you want to
+modify the code), you will need a computer. **What you need depends on the phone
+you have:**
 
 | Your phone | Your computer | Works? | What you'll use |
 | --- | --- | --- | --- |

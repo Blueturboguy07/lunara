@@ -16,10 +16,35 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    // A release signingConfig is only wired up when Android's standard
+    // "injected" signing properties are supplied on the command line
+    // (-Pandroid.injected.signing.store.file=... etc — the same mechanism
+    // Android Studio's "Generate Signed Bundle / APK" wizard uses, and what
+    // .github/workflows/release.yml passes when the ANDROID_KEYSTORE_*
+    // secrets are configured). Without a signingConfig object assigned to
+    // buildTypes.release, those properties have nothing to attach to and are
+    // silently ignored, leaving app-release.apk unsigned. When the properties
+    // are absent (a plain local `./gradlew assembleRelease`, or CI with no
+    // release secrets configured) we skip the signingConfig entirely so the
+    // build still succeeds rather than failing.
+    if (project.hasProperty('android.injected.signing.store.file')) {
+        signingConfigs {
+            release {
+                storeFile file(project.property('android.injected.signing.store.file'))
+                storePassword project.property('android.injected.signing.store.password')
+                keyAlias project.property('android.injected.signing.key.alias')
+                keyPassword project.property('android.injected.signing.key.password')
+            }
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            if (project.hasProperty('android.injected.signing.store.file')) {
+                signingConfig signingConfigs.release
+            }
         }
     }
 }
