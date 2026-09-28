@@ -29,7 +29,9 @@ import {
   provisionPublik,
   PUBLIK_BUILD,
   PUBLIK_DATA_PATH,
+  PUBLIK_LINK_STARTER_MICROS,
   PUBLIK_MODELS,
+  PUBLIK_STARTS_AT_ZERO,
   PUBLIK_WHY_IT_COSTS,
   publikAvailable,
   publikBalanceLine,
@@ -576,7 +578,7 @@ export function AssistantScreen() {
             </button>
           )}
           <button className="text-button" onClick={() => void dismissPublikCard()}>
-            {publikCard.claimState === 'claimed' ? 'Start chatting' : 'Not now — keep the free starter'}
+            {publikCard.claimState === 'claimed' ? 'Start chatting' : 'Not now'}
           </button>
         </div>
       ) : setupOpen ? (
@@ -586,7 +588,7 @@ export function AssistantScreen() {
             <h3>Choose where answers come from</h3>
             <p>
               {publikHere
-                ? 'publik API needs no account or key. Your own key, if you add one, stays on this device.'
+                ? 'publik API needs no key. Your own key, if you add one, stays on this device.'
                 : 'Your key stays on this device.'}
             </p>
             <div className="ai-provider-grid">
@@ -598,7 +600,7 @@ export function AssistantScreen() {
                   <span className="choice-icon">◐</span>
                   <span>
                     <strong>publik API</strong>
-                    <small>{apiKey && provider === 'publik' ? publikStatusLine(publikUsage) : 'No key needed · free starter usage'}</small>
+                    <small>{apiKey && provider === 'publik' ? publikStatusLine(publikUsage) : `No key needed · link once for ${dollars(PUBLIK_LINK_STARTER_MICROS)} of free use`}</small>
                   </span>
                 </button>
               )}
@@ -639,8 +641,8 @@ export function AssistantScreen() {
                 {apiKey && <p className="microcopy"><strong>{publikStatusLine(publikUsage)}</strong></p>}
                 <p className="microcopy">
                   <strong>Cost.</strong> {costSentence}
-                  {!apiKey && starterMicros === null ? ' Every new phone starts with free usage and no card.' : ''}
-                  {starterMicros !== null ? ` Your first ${dollars(starterMicros)} is free.` : ''}
+                  {!apiKey && starterMicros === null && costSentence === PUBLIK_WHY_IT_COSTS ? ` ${PUBLIK_STARTS_AT_ZERO}` : ''}
+                  {starterMicros !== null ? ` This phone came with ${dollars(starterMicros)} of free use.` : ''}
                 </p>
                 <p className="microcopy">
                   <strong>Where your messages go.</strong> {PUBLIK_DATA_PATH}

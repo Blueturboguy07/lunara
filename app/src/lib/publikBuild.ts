@@ -33,8 +33,11 @@ export const PUBLIK_BUILD = {
   appToken: envToken || PUBLIK_APP_TOKEN_PLACEHOLDER,
   /** Compiled default; the `base_url` field of POST /installs wins over it (CONTRACT §1). */
   baseUrl: 'https://publikhq.com/api/v1',
-  /** Recorded by the gateway with the install; bump when the disclosure copy changes. */
-  disclosureVersion: 2,
+  /**
+   * Recorded by the gateway with the install; bump when the disclosure copy changes.
+   * 3: a new phone starts at $0.00; linking a publik account gives $0.05 of free use, once.
+   */
+  disclosureVersion: 3,
   dialects: ['responses'] as const,
 } as const
 

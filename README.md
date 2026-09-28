@@ -83,12 +83,13 @@ pnpm --filter @lunara/app native:sync
 iOS and Android projects. **Re-run it after every code change** — the native
 shells load a copied bundle, not your live source.
 
-**AI assistant.** Lunara AI runs on **publik API** by default: no account and
-no key, free starter usage to begin with, then every request is priced per use
-at 50% of the model's published list price from your publik balance — the AI
-model behind it is run by a provider that charges per use, publik passes that
-on at half list, nothing is charged behind your back, and every call is visible
-on your publik dashboard. Only your message and the tracker categories you tick
+**AI assistant.** Lunara AI runs on **publik API** by default: no key needed.
+A new phone starts at $0.00 and no card is asked for; linking your publik
+account gives $0.05 of free use, once, and after that every request is priced
+per use at 50% of the model's published list price from your publik balance —
+the AI model behind it is run by a provider that charges per use, publik passes
+that on at half list, nothing is charged behind your back, and every call is
+visible on your publik dashboard. Only your message and the tracker categories you tick
 are sent, through publik's servers to a shared model account; publik never
 trains on them and does not store them. Prefer your own provider? Pick
 Anthropic or OpenAI in AI settings and paste your own key — it stays in your
@@ -173,11 +174,14 @@ run `pnpm test` before touching any prediction math.
 Lunara works fully without AI, and the companion is never offered under 18.
 When it is on, answers come from one of three places:
 
-- **publik API** (default) — no account, no key. The app mints its own
-  per-phone key from publik on first launch, after you accept the disclosure,
-  and keeps it in the iOS Keychain / Android Keystore. Free starter usage,
-  then priced per use from your publik balance; link the phone at the claim
-  link to pick a plan or add a pack. Disconnect at any time from Settings.
+- **publik API** (default) — no key needed. The app mints its own per-phone
+  key from publik on first launch, after you accept the disclosure, and keeps
+  it in the iOS Keychain / Android Keystore. A new phone starts at $0.00: link
+  it at the claim link and your publik account gives $0.05 of free use, once;
+  then pick a plan or add a pack, and usage is priced per use from your publik
+  balance. Until the phone is linked (or you add your own key), the assistant
+  says there is no balance and shows the link. Disconnect at any time from
+  Settings.
 - **Anthropic** — your own API key, or a token from `claude setup-token` to
   bill answers to a Claude subscription.
 - **OpenAI** — your own project API key.

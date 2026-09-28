@@ -10,6 +10,8 @@ import {
   publikModelsFrom,
   publikStatusLine,
   publikUrl,
+  PUBLIK_LINK_STARTER_MICROS,
+  PUBLIK_STARTS_AT_ZERO,
   PUBLIK_WHY_IT_COSTS,
   readPublikUsage,
   resolvePublikModel,
@@ -73,6 +75,14 @@ describe('publik gateway errors (CONTRACT §1, §12.3)', () => {
     expect(error.message).toContain('linked to a publik account')
   })
 
+  it('402 without a server message while unlinked → fallback says $0.05 of free use comes with linking, never a spent starter', async () => {
+    const error = await publikErrorFrom(reply(402, { error: { type: 'insufficient_credit', claim_state: 'anonymous', top_up_url: 'https://publikhq.com/claim/AB' } }))
+    expect(error.kind).toBe('needs_credit')
+    expect(error.link).toBe('https://publikhq.com/claim/AB')
+    expect(error.message).toContain('linking gives $0.05 of free use, once')
+    expect(error.message).not.toMatch(/used up|free starter|credits/i)
+  })
+
   it('drops a top_up_url on any host other than publikhq.com (CONTRACT §11.4)', async () => {
     const error = await publikErrorFrom(reply(402, { error: { type: 'insufficient_credit', claim_state: 'anonymous', top_up_url: 'https://evil.example/claim/X' } }))
     expect(error.link).toBeNull()
@@ -122,8 +132,8 @@ describe('publik usage headers (CONTRACT §1, §11.6)', () => {
         'x-publik-week-used': '248760',
         'x-publik-week-budget': 'none',
         'x-publik-week-resets-at': '2026-09-25T17:04:11Z',
-        'x-publik-claim-state': 'anonymous',
-        'x-publik-starter-remaining': '120000',
+        'x-publik-claim-state': 'claimed',
+        'x-publik-starter-remaining': '30000',
         'x-publik-charge-micros': '1400',
       }),
     )
@@ -132,8 +142,8 @@ describe('publik usage headers (CONTRACT §1, §11.6)', () => {
       weekUsedMicros: 248760,
       weekBudgetMicros: null,
       weekResetsAt: '2026-09-25T17:04:11Z',
-      claimState: 'anonymous',
-      starterRemainingMicros: 120000,
+      claimState: 'claimed',
+      starterRemainingMicros: 30000,
       chargeMicros: 1400,
     })
   })
@@ -151,18 +161,32 @@ describe('publik copy (CONTRACT §1 copy rule)', () => {
 
   it('formats dollars and the status line without a forbidden unit', () => {
     expect(dollars(250_000)).toBe('$0.25')
+    expect(dollars(PUBLIK_LINK_STARTER_MICROS)).toBe('$0.05')
     expect(publikStatusLine(null)).toBe('Ready')
-    const anon = publikStatusLine({ balanceMicros: 120000, weekUsedMicros: 10, weekBudgetMicros: null, weekResetsAt: null, starterRemainingMicros: 120000, claimState: 'anonymous', chargeMicros: null })
-    expect(anon).toBe('$0.12 left of free starter usage · link this phone to add more')
+    // A new install is minted at $0.00 (publik 0059): the line points at the link, never at a "free starter".
+    const anon = publikStatusLine({ balanceMicros: 0, weekUsedMicros: 0, weekBudgetMicros: null, weekResetsAt: null, starterRemainingMicros: 0, claimState: 'anonymous', chargeMicros: null })
+    expect(anon).toBe('$0.00 · link this phone for $0.05 of free use')
+    // An install minted before 0059 may still carry some of its old starter.
+    const legacy = publikStatusLine({ balanceMicros: 120000, weekUsedMicros: 10, weekBudgetMicros: null, weekResetsAt: null, starterRemainingMicros: 120000, claimState: 'anonymous', chargeMicros: null })
+    expect(legacy).toBe('$0.12 left of free use · link this phone to add more')
     const claimed = publikStatusLine({ balanceMicros: 3_120_000, weekUsedMicros: 1_200_000, weekBudgetMicros: 4_600_000, weekResetsAt: null, starterRemainingMicros: null, claimState: 'claimed', chargeMicros: null })
     expect(claimed).toBe('$3.12 left · this week $1.20 of $4.60')
-    for (const line of [anon, claimed, PUBLIK_WHY_IT_COSTS, publikBalanceLine(250_000, 'anonymous'), publikLinkButtonLabel('anonymous'), publikLinkButtonLabel('claimed')]) {
+    for (const line of [anon, legacy, claimed, PUBLIK_WHY_IT_COSTS, PUBLIK_STARTS_AT_ZERO, publikBalanceLine(0, 'anonymous'), publikBalanceLine(PUBLIK_LINK_STARTER_MICROS, 'claimed'), publikLinkButtonLabel('anonymous'), publikLinkButtonLabel('claimed')]) {
       for (const pattern of forbidden) expect(line).not.toMatch(pattern)
+      expect(line).not.toMatch(/free starter/i)
     }
   })
 
+  it('states the 0059 policy: $0.00 to start, $0.05 of free use once on linking', () => {
+    expect(PUBLIK_LINK_STARTER_MICROS).toBe(50_000)
+    expect(PUBLIK_STARTS_AT_ZERO).toBe('A new phone starts at $0.00 and no card is asked for. Linking your publik account gives $0.05 of free use, once.')
+  })
+
   it('first-run card lines: balance from the mint, then the two button states', () => {
-    expect(publikBalanceLine(250_000, 'anonymous')).toBe('$0.25 of free starter usage')
+    expect(publikBalanceLine(0, 'anonymous')).toBe('$0.00 · link this phone for $0.05 of free use')
+    expect(publikBalanceLine(0, null)).toBe('$0.00 · link this phone for $0.05 of free use')
+    expect(publikBalanceLine(PUBLIK_LINK_STARTER_MICROS, 'claimed')).toBe('$0.05 of publik usage available')
+    expect(publikBalanceLine(120_000, 'anonymous')).toBe('$0.12 of free use')
     expect(publikBalanceLine(null, null)).toBe('Checking your publik balance…')
     expect(publikLinkButtonLabel('anonymous')).toBe('Link this phone & pick a plan')
     expect(publikLinkButtonLabel('claimed')).toBe('Add a plan or pack')

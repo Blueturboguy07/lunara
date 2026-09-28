@@ -73,10 +73,25 @@ export class PublikApiError extends Error {
   }
 }
 
-/** Formats micros as "$0.25". Never prints a unit other than dollars. */
+/** Formats micros as "$0.05". Never prints a unit other than dollars. */
 export function dollars(micros: number): string {
   return `$${(micros / 1_000_000).toFixed(2)}`
 }
+
+/**
+ * The one free thing publik API gives (publik migration 0059): $0.05 of use,
+ * paid once per publik account when a phone is first linked to it, or when
+ * an install is minted already bound to the signed-in account. A new,
+ * unlinked install starts at $0.00, so every metered call answers 402 until
+ * the phone is linked, a plan or pack is bought, or the user adds a key.
+ */
+export const PUBLIK_LINK_STARTER_MICROS = 50_000
+
+/** Appended to the local cost sentence while the gateway's own one is not known yet. */
+export const PUBLIK_STARTS_AT_ZERO = `A new phone starts at $0.00 and no card is asked for. Linking your publik account gives ${dollars(PUBLIK_LINK_STARTER_MICROS)} of free use, once.`
+
+/** A $0.00 balance on a phone that is not linked yet. */
+const LINK_FOR_FREE_USE = `$0.00 · link this phone for ${dollars(PUBLIK_LINK_STARTER_MICROS)} of free use`
 
 /**
  * The one-sentence justification (CONTRACT §12.1b). Verbatim from
@@ -189,7 +204,7 @@ export async function publikErrorFrom(response: Response): Promise<PublikApiErro
     case 402: {
       const fallback = claimed
         ? 'Not enough publik balance for this request. Add a plan or a pack at the link below, or use your own key.'
-        : 'Your free publik starter is used up. Link this phone and pick a plan at the link below, or use your own key.'
+        : `Not enough publik balance on this phone. Link it to your publik account at the link below: linking gives ${dollars(PUBLIK_LINK_STARTER_MICROS)} of free use, once, and a plan or a pack takes it from there. Or use your own key.`
       const message =
         (err.type === 'insufficient_credit' || err.type === 'model_requires_claim') && typeof err.message === 'string' && err.message.trim()
           ? err.message.trim()
@@ -245,8 +260,10 @@ export function publikUnreachable(): PublikApiError {
 export function publikStatusLine(usage: PublikUsage | null): string {
   if (!usage || usage.balanceMicros === null) return 'Ready'
   const left = `${dollars(usage.balanceMicros)} left`
-  if (usage.claimState === 'anonymous' && usage.starterRemainingMicros !== null) {
-    return `${left} of free starter usage · link this phone to add more`
+  if (usage.claimState === 'anonymous') {
+    // A new install starts at $0.00: never call an empty balance "free usage".
+    if (usage.balanceMicros <= 0) return LINK_FOR_FREE_USE
+    if (usage.starterRemainingMicros !== null) return `${left} of free use · link this phone to add more`
   }
   if (usage.weekBudgetMicros !== null && usage.weekUsedMicros !== null) {
     return `${left} · this week ${dollars(usage.weekUsedMicros)} of ${dollars(usage.weekBudgetMicros)}`
@@ -257,9 +274,8 @@ export function publikStatusLine(usage: PublikUsage | null): string {
 /** The balance line of the first-run card (CONTRACT §12.1a). */
 export function publikBalanceLine(balanceMicros: number | null, claimState: PublikClaimState | null): string {
   if (balanceMicros === null) return 'Checking your publik balance…'
-  return claimState === 'claimed'
-    ? `${dollars(balanceMicros)} of publik usage available`
-    : `${dollars(balanceMicros)} of free starter usage`
+  if (claimState === 'claimed') return `${dollars(balanceMicros)} of publik usage available`
+  return balanceMicros > 0 ? `${dollars(balanceMicros)} of free use` : LINK_FOR_FREE_USE
 }
 
 /** Adults only: the AI companion, and publik with it, is hidden under 18 everywhere. */

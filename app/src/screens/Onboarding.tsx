@@ -26,10 +26,13 @@ import {
 import { localToday } from '../lib/dates'
 import {
   DEFAULT_PUBLIK_MODEL,
+  dollars,
   markPublikCardSeen,
   provisionPublik,
   PUBLIK_BUILD,
   PUBLIK_DATA_PATH,
+  PUBLIK_LINK_STARTER_MICROS,
+  PUBLIK_STARTS_AT_ZERO,
   PUBLIK_WHY_IT_COSTS,
   publikAvailable,
   publikBalanceLine,
@@ -1562,7 +1565,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         <div className="ai-provider-grid">
           {publikHere && (
             <OptionCard
-              option={{ id: 'publik', icon: '◐', label: 'publik API', detail: 'No account, no key. Free starter usage, then priced per use.' }}
+              option={{ id: 'publik', icon: '◐', label: 'publik API', detail: `No key needed. Starts at $0.00; link your publik account for ${dollars(PUBLIK_LINK_STARTER_MICROS)} of free use, then priced per use.` }}
               selected={provider === 'publik'}
               onClick={() => chooseProvider('publik')}
             />
@@ -1594,8 +1597,8 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
           <div className="card ai-setup-card">
             <p className="microcopy"><strong>Lunara AI uses publik API.</strong></p>
             <p className="microcopy">
-              <strong>Cost.</strong> {PUBLIK_WHY_IT_COSTS} Every new phone starts with free usage and no
-              card; most people spend under $2 a month.
+              <strong>Cost.</strong> {PUBLIK_WHY_IT_COSTS} {PUBLIK_STARTS_AT_ZERO} Most people spend
+              under $2 a month after that.
             </p>
             <p className="microcopy">
               <strong>Where your messages go.</strong> {PUBLIK_DATA_PATH}
@@ -1667,7 +1670,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         )}
         {provider === 'publik' && publikInstall ? (
           <button className="cta" onClick={() => void continueFromPublikCard()}>
-            {publikInstall.claimState === 'claimed' ? 'Continue' : 'Not now — keep the free starter'}
+            {publikInstall.claimState === 'claimed' ? 'Continue' : 'Not now'}
           </button>
         ) : provider === 'publik' ? (
           <button className="cta" onClick={() => void connectPublik()} disabled={publikBusy}>
