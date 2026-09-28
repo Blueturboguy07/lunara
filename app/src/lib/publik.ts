@@ -43,7 +43,10 @@ export interface PublikInstall {
   installId: string
   claimUrl: string | null
   claimState: PublikClaimState
-  /** The starter grant from this mint (0 on a replay). */
+  /**
+   * The starter grant from this mint: 0 for a new unlinked install and on a
+   * replay; $0.05 once per publik account when the mint is already bound to it.
+   */
   starterMicros: number
   /** The live balance the gateway reported with the mint. */
   balanceMicros: number | null
@@ -55,7 +58,7 @@ export interface PublikInstall {
 /**
  * Whether this build can offer publik API at all: a minted app token, a
  * native shell whose vault persists (the web vault is session memory and a
- * key minted there would burn the starter every tab), and an adult profile —
+ * key minted there would mint a new install every tab), and an adult profile —
  * AI is hidden under 18 everywhere.
  */
 export async function publikAvailable(options: { assumeAdult?: boolean } = {}): Promise<boolean> {

@@ -90,10 +90,15 @@ function mintedReply(overrides: Record<string, unknown> = {}) {
     claim_code: 'HK7F-2QWD',
     claim_url: 'https://publikhq.com/claim/HK7F-2QWD',
     claim_state: 'anonymous',
-    starter_micros: 250_000,
-    balance_micros: 250_000,
-    starting_credit_micros: 250_000,
-    disclosure: { version: 1, cost: 'Lunara runs on publik API by default: the AI model behind it is run by a provider that charges per use…', data_path: '…' },
+    // publik 0059: a new install is minted at $0.00; the $0.05 comes once per account, on linking.
+    starter_micros: 0,
+    balance_micros: 0,
+    starting_credit_micros: 0,
+    disclosure: {
+      version: 1,
+      cost: 'Lunara runs on publik API by default: the AI model behind it is run by a provider that charges per use… A new computer starts at $0.00 and no card is asked for: linking this computer to your publik account gives $0.05 of free use, once, and a plan, a pack or your own key takes it from there; nothing is charged behind your back…',
+      data_path: '…',
+    },
     ...overrides,
   }
 }
@@ -167,8 +172,8 @@ describe('provisionPublik (CONTRACT §3.2)', () => {
     expect(body.disclosure_version).toBe(2)
     expect(body.dialects).toEqual(['responses'])
     expect(body.install_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
-    expect(result.starterMicros).toBe(250_000)
-    expect(result.balanceMicros).toBe(250_000)
+    expect(result.starterMicros).toBe(0)
+    expect(result.balanceMicros).toBe(0)
     expect(result.claimUrl).toBe('https://publikhq.com/claim/HK7F-2QWD')
     expect(result.claimState).toBe('anonymous')
     expect(result.costSentence).toContain('publik API')
@@ -185,11 +190,37 @@ describe('provisionPublik (CONTRACT §3.2)', () => {
     expect(settings.store.get('publikClaimUrl')).toBe('https://publikhq.com/claim/HK7F-2QWD')
     expect(settings.store.get('publikClaimState')).toBe('anonymous')
     expect(settings.store.get('publikBaseUrl')).toBe('https://publikhq.com/api/v1')
-    expect(settings.store.get('publikStarterMicros')).toBe('250000')
+    // A $0.00 mint records no starter, so no screen can later call it free use.
+    expect(settings.store.has('publikStarterMicros')).toBe(false)
     expect(settings.store.get('publikCostSentence')).toContain('publik API')
     expect(settings.store.get('publikInstallId')).toMatch(/-4/)
     const endpoint = await publikEndpoint()
     expect(endpoint.models.balanced).toBe('publik-balanced-v2')
+  })
+
+  it('a mint already bound to the signed-in account carries the one $0.05 starter and no claim link', async () => {
+    const { fetchImpl } = fetchSequence([
+      (call) =>
+        json(
+          201,
+          mintedReply({
+            install_id: JSON.parse(String(call.init?.body)).install_id,
+            claim_state: 'claimed',
+            claim_code: null,
+            claim_url: null,
+            starter_micros: 50_000,
+            balance_micros: 50_000,
+            starting_credit_micros: 50_000,
+          }),
+        ),
+    ])
+    const result = await provisionPublik({ fetchImpl })
+    expect(result.claimState).toBe('claimed')
+    expect(result.claimUrl).toBeNull()
+    expect(result.starterMicros).toBe(50_000)
+    expect(result.balanceMicros).toBe(50_000)
+    expect(settings.store.get('publikStarterMicros')).toBe('50000')
+    expect(settings.store.get('publikClaimState')).toBe('claimed')
   })
 
   it('honours base_url from the response over the compiled default, but never a foreign host', async () => {
@@ -280,9 +311,9 @@ describe('fetchPublikWallet', () => {
         json(200, {
           install_id: '22222222-2222-4222-8222-222222222222',
           claim_state: 'anonymous',
-          balance_micros: 410_000,
-          starter: { remaining_micros: 160_000, expires_at: null },
-          week: { used_micros: 90_000, budget_micros: null, resets_at: '2026-09-25T17:04:11Z' },
+          balance_micros: 0,
+          starter: { remaining_micros: 0, expires_at: null },
+          week: { used_micros: 0, budget_micros: null, resets_at: '2026-09-25T17:04:11Z' },
           claim_code: 'HK7F-2QWD',
           claim_url: 'https://publikhq.com/claim/HK7F-2QWD',
           add_credit_url: 'https://publikhq.com/dashboard/api/add',
@@ -293,9 +324,9 @@ describe('fetchPublikWallet', () => {
     const wallet = await fetchPublikWallet(fetchImpl)
     expect(calls[0].url).toBe('https://preview.publikhq.com/api/v1/wallet')
     expect(new Headers(calls[0].init?.headers).get('authorization')).toBe('Bearer pk_live_test')
-    expect(wallet.balanceMicros).toBe(410_000)
-    expect(wallet.starterRemainingMicros).toBe(160_000)
-    expect(wallet.weekUsedMicros).toBe(90_000)
+    expect(wallet.balanceMicros).toBe(0)
+    expect(wallet.starterRemainingMicros).toBe(0)
+    expect(wallet.weekUsedMicros).toBe(0)
     expect(wallet.weekBudgetMicros).toBeNull()
     expect(wallet.topUpUrl).toBe('https://publikhq.com/claim/HK7F-2QWD')
     expect(settings.store.get('publikInstallId')).toBe('22222222-2222-4222-8222-222222222222')
