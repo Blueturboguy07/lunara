@@ -116,6 +116,28 @@
   gap: 10px;
 }
 
+/* A gate screen asked while the app is open (the plan after onboarding, an on-demand sign-in). */
+.publik-gate-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  overflow-y: auto;
+  background: var(--paper-100);
+}
+
+/* The health-data consent screen inside Lunara AI. */
+.assistant-health-consent ul {
+  margin: 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 4px;
+}
+
+.medical-advice-note {
+  margin-top: 6px;
+  font-weight: 600;
+}
+
 .startup-failure-details {
   color: var(--ink-500);
   font-size: 13px;

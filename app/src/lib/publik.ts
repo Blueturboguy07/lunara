@@ -19,10 +19,17 @@
  * (components/PublikGate.tsx does this). It
  *   1. loads or provisions this phone's publik key (POST /api/v1/installs);
  *   2. shows Sign in with publik until GET /api/v1/wallet says "claimed" (no other way past it);
- *   3. when USES_AI: asks once how the app pays for AI and stores the answer (setChoice() changes it);
+ *   3. when USES_AI and the person is a known adult: asks once how the app pays for AI and
+ *      stores the answer (setChoice() changes it). With no birth year yet (a first start),
+ *      the plan screen waits: onboarding asks the age, then the gate runs again;
  *   4. starts usage counting: app_opened now, active_session every 30 minutes (POST /api/v1/telemetry).
  *      An event carries the slug, the version, the phone type and a random ID. Never a log,
  *      a cycle date or any other health data.
+ *
+ * The build setting PUBLIK_GATE_MODE=optional (lib/buildFlags.ts) opens the tracker with no
+ * wall instead: openWithoutWall() at start (usage counting only if this phone signed in
+ * before), and signInOnDemand(ui) when the person opens Lunara AI or the publik row in
+ * Settings. That screen has a "Not now" button; usage counting starts only after sign-in.
  *
  * Test hook: PUBLIK_API_BASE_URL (a launch argument of a debug build, or the
  * build environment) points every call at another publik, for example a fake
@@ -88,7 +95,8 @@ export interface Wallet {
   claim_state: 'anonymous' | 'claimed'; claim_url: string | null; account: { handle: string | null } | null
   plan: { kind: 'none' | 'plan' | 'pack'; label: string | null }; balance_micros: number; top_up_url: string; linked_at: string | null
 }
-export type GateAction = 'sign_in' | 'retry' | 'get_plan' | 'connect' | 'own_key'
+/** 'not_now' exists only on signInOnDemand() screens (PUBLIK_GATE_MODE=optional). */
+export type GateAction = 'sign_in' | 'retry' | 'get_plan' | 'connect' | 'own_key' | 'not_now'
 export interface GateScreen { id: 'sign_in' | 'unreachable' | 'choose'; title: string; body: string; note: string | null; buttons: { action: GateAction; label: string }[] }
 /** show(): draw the screen and resolve with the button pressed. When `signal` aborts, stop waiting for a press (the promise may stay pending). */
 export interface GateUI { show(screen: GateScreen, signal: AbortSignal): Promise<GateAction>; openUrl(url: string): unknown }
@@ -781,26 +789,95 @@ async function ask(ui: GateUI, screen: GateScreen, key?: string, until?: (w: Wal
   }
 }
 
-/** A known birth year under 18: Lunara hides AI, so the gate does not ask how to pay for it. */
-async function knownMinor(): Promise<boolean> {
+/**
+ * The plan screen is for a known adult only: a birth year of 18 or more. A
+ * known minor never sees it (Lunara hides AI under 18), and neither does a
+ * person whose age is not known yet (onboarding asks it first).
+ */
+async function knownAdult(): Promise<boolean> {
   const birthYear = await getSetting(SK.birthYear)
-  return Boolean(birthYear) && !isAdultBirthYear(birthYear)
+  return Boolean(birthYear) && isAdultBirthYear(birthYear)
+}
+
+/** True where the gate itself asks how to pay for AI: a phone build. Onboarding skips its own AI step there. */
+export function gateAsksPlanHere(): boolean {
+  return USES_AI && isNative
 }
 
 function offlineWallet(): Wallet {
   return { claim_state: 'claimed', claim_url: null, account: null, plan: { kind: 'none', label: null }, balance_micros: 0, top_up_url: `${origin()}/wallet`, linked_at: null }
 }
 
+/** PUBLIK_SELF_TEST: print the self-test line and end the app. Resolves never when it runs. */
+async function selfTestIfAsked(): Promise<void> {
+  await loadLaunchOptions()
+  if (!launch.selfTest) return
+  const line = await selfTest()
+  console.log(line)
+  if (isNative) await nativeLaunch.publikSelfTestDone({ line }).catch(() => undefined) // prints the line and ends the app
+  return new Promise<void>(() => {})
+}
+
 /** The gate (see the top of the file). Resolves once the person is signed in; `choice` is null when the plan screen does not apply. */
 export async function ensureSignedIn(ui: GateUI): Promise<GateResult> {
-  await loadLaunchOptions()
-  if (launch.selfTest) {
-    const line = await selfTest()
-    console.log(line)
-    if (isNative) await nativeLaunch.publikSelfTestDone({ line }).catch(() => undefined) // prints the line and ends the app
-    return new Promise<GateResult>(() => {})
-  }
+  return (await gateLoop(ui, false)) as GateResult
+}
+
+/**
+ * PUBLIK_GATE_MODE=optional: the same gate, asked when the person opens Lunara
+ * AI or the publik row in Settings. Every screen has "Not now", which resolves
+ * null (nothing more is sent). On the plan screen "Not now" keeps the sign-in
+ * and resolves with `choice: null`.
+ */
+export function signInOnDemand(ui: GateUI): Promise<GateResult | null> {
+  return gateLoop(ui, true)
+}
+
+/** PUBLIK_GATE_MODE=optional, at app start: no screen. Usage counting starts only if this phone signed in before. */
+export async function openWithoutWall(): Promise<void> {
+  await selfTestIfAsked()
   watchForeground()
+  if (await signedInHere()) startTelemetry()
+}
+
+/** True when this phone holds a key that publik last said is signed in. Makes no request. */
+export async function signedInHere(): Promise<boolean> {
+  const [state, key] = await Promise.all([getSetting(SK.publikClaimState), readKey()])
+  return state === 'claimed' && Boolean(key?.startsWith('pk_'))
+}
+
+/** Optional mode: true when opening Lunara AI must first show the gate (not signed in, or a known adult with no plan answer). */
+export async function needsSignInOnDemand(): Promise<boolean> {
+  if (!(await signedInHere())) return true
+  if (!gateAsksPlanHere() || !(await knownAdult())) return false
+  return !(await readCredential())?.choice
+}
+
+// ---------- account deletion (App Store 5.1.1(v)) ----------
+
+/** publik's page where the person deletes the publik account (for every publik app). The test hook moves it too. */
+export function accountDeletionUrl(): string {
+  return `${origin()}/settings/profile#delete-account-title`
+}
+
+/**
+ * Settings > Delete account, step 2: sign this phone out of publik (POST
+ * /installs/revoke, best effort) and delete every publik value Lunara keeps
+ * here, the usage-counting ID too. "Count my use: Off" stays off. Cycle data
+ * is not touched; Settings offers that as a separate step.
+ */
+export async function deletePublikDataOnThisPhone(fetchImpl: FetchLike = providerFetch): Promise<void> {
+  await disconnectPublik(fetchImpl)
+  await removeSetting(SK.publikTelemetryId)
+  if (timer) clearInterval(timer)
+  timer = null
+}
+
+async function gateLoop(ui: GateUI, notNow: boolean): Promise<GateResult | null> {
+  await selfTestIfAsked()
+  watchForeground()
+  // "Not now" on every screen of an on-demand sign-in (optional mode); never on the wall.
+  const offer = (screen: GateScreen): GateScreen => (notNow ? { ...screen, buttons: [...screen.buttons, { action: 'not_now', label: 'Not now' }] } : screen)
   let signNote: string | null = null, signPoll = true, planNote: string | null = null, planPoll = false, chosenNow = false
   let revokedInARow = 0
   for (;;) {
@@ -818,12 +895,12 @@ export async function ensureSignedIn(ui: GateUI): Promise<GateResult> {
         startTelemetry()
         return { key: c.key, wallet: offlineWallet(), choice: c.choice, chosenNow: false, offline: true }
       }
-      await ask(ui, gateScreen('unreachable', null, null, offline ? undefined : e instanceof Error ? e.message : String(e)))
+      if ((await ask(ui, offer(gateScreen('unreachable', null, null, offline ? undefined : e instanceof Error ? e.message : String(e))))) === 'not_now') return null
       continue
     }
     if (r.status === 401) {
       // A revoked key: provision again. A new key that is refused at once too: wait for Retry, never loop on publik.
-      if (++revokedInARow >= 2) await ask(ui, gateScreen('unreachable', null, null, r.message ?? undefined))
+      if (++revokedInARow >= 2 && (await ask(ui, offer(gateScreen('unreachable', null, null, r.message ?? undefined)))) === 'not_now') return null
       await forgetInstall()
       continue
     }
@@ -835,23 +912,29 @@ export async function ensureSignedIn(ui: GateUI): Promise<GateResult> {
         startTelemetry()
         return { key: c.key, wallet: offlineWallet(), choice: c.choice, chosenNow: false, offline: true }
       }
-      await ask(ui, gateScreen('unreachable', null, null, r.message ?? undefined))
+      if ((await ask(ui, offer(gateScreen('unreachable', null, null, r.message ?? undefined)))) === 'not_now') return null
       continue
     }
     if (w.claim_state !== 'claimed') {
-      const a = await ask(ui, gateScreen('sign_in', w, signNote), c.key, signPoll ? (x) => x.claim_state === 'claimed' : undefined)
+      const a = await ask(ui, offer(gateScreen('sign_in', w, signNote)), c.key, signPoll ? (x) => x.claim_state === 'claimed' : undefined)
+      if (a === 'not_now') return null
       if (a === 'sign_in') { ui.openUrl(w.claim_url ?? c.claim_url ?? `${origin()}/wallet`); signNote = 'Waiting for you to sign in in your browser.'; signPoll = true }
       if (a === 'timeout') { signNote = 'No sign-in after 10 minutes. Click Sign in with publik to try again.'; signPoll = false }
       if (a === 'done') closeBrowser()
       continue
     }
-    // The plan screen: Lunara AI runs on a phone, for adults; a browser build and a known minor skip it.
-    const asksAi = USES_AI && isNative && !(await knownMinor())
+    // The plan screen: Lunara AI runs on a phone, for a known adult; a browser build, a known minor and an unknown age skip it.
+    const asksAi = gateAsksPlanHere() && (await knownAdult())
     let choice: Choice | null = asksAi ? c.choice : null
     if (asksAi && !choice) {
       if (w.plan.kind !== 'none' || w.balance_micros > 0) { planNote = null; planPoll = false } // the plan is there: Connect your plan
-      const a = await ask(ui, gateScreen('choose', w, planNote), c.key, planPoll ? (x) => x.plan.kind !== 'none' || x.balance_micros > 0 : undefined)
+      const a = await ask(ui, offer(gateScreen('choose', w, planNote)), c.key, planPoll ? (x) => x.plan.kind !== 'none' || x.balance_micros > 0 : undefined)
       planNote = null; planPoll = false
+      if (a === 'not_now') {
+        // Signed in, no answer yet: Lunara asks again the next time.
+        startTelemetry()
+        return { key: c.key, wallet: w, choice: null, chosenNow: false, offline: false }
+      }
       if (a === 'get_plan') { ui.openUrl(w.top_up_url); planNote = 'Waiting for your plan. Finish in your browser.'; planPoll = true }
       if (a === 'timeout') planNote = 'No plan after 10 minutes. Click Get a plan to try again.'
       if (a === 'done') closeBrowser()

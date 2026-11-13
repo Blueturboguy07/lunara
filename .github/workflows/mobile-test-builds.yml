@@ -1,10 +1,14 @@
 # Test builds of the phone apps, with Sign in with publik.
 #
 #   android-debug-apk  the test suite, then a debug APK (Android debug key)
-#   ios-sim-app        an unsigned arm64 iOS simulator app (zip), then the
-#                      publik self-test in a simulator: the built app prints
-#                      "publik self-test: ok lunara <version>" only after a
-#                      real GET /wallet answers
+#   ios-sim-app           an unsigned arm64 iOS simulator app (zip), gate mode
+#                         "required" (Sign in with publik before any screen)
+#   ios-sim-app-optional  the same with PUBLIK_GATE_MODE=optional (no wall;
+#                         sign-in when the person opens Lunara AI or Settings)
+#   Both iOS apps are App Store builds (APP_STORE_BUILD=1: no Claude
+#   subscription-token option) and both run the publik self-test in a
+#   simulator: the built app prints "publik self-test: ok lunara <version>"
+#   only after a real GET /wallet answers.
 #
 # It never tags and never publishes a release (release.yml does that).
 # The publik app token comes from the PUBLIK_APP_TOKEN secret at build time
@@ -98,9 +102,17 @@ jobs:
           retention-days: 30
 
   ios:
-    name: iOS simulator app + publik self-test
+    name: iOS simulator app (${{ matrix.gate_mode }}) + publik self-test
     runs-on: macos-15
     timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - gate_mode: required
+            artifact: ios-sim-app
+          - gate_mode: optional
+            artifact: ios-sim-app-optional
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4.2.2
@@ -120,10 +132,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build web bundle (native mode)
+      - name: Build web bundle (native mode, App Store build, gate ${{ matrix.gate_mode }})
         working-directory: app
         env:
           VITE_PUBLIK_APP_TOKEN: ${{ secrets.PUBLIK_APP_TOKEN }}
+          PUBLIK_GATE_MODE: ${{ matrix.gate_mode }}
+          APP_STORE_BUILD: "1"
         run: pnpm build:native
 
       - name: Sync web assets into the iOS project
@@ -147,17 +161,23 @@ jobs:
           APP="$RUNNER_TEMP/dd/Build/Products/Debug-iphonesimulator/App.app"
           echo "APP=$APP" >> "$GITHUB_ENV"
           echo "Architectures: $(lipo -archs "$APP/App")"
+          echo "Version: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist") ($(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist"))"
+          echo "Display name: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$APP/Info.plist")"
+          echo "Device family: $(/usr/libexec/PlistBuddy -c 'Print :UIDeviceFamily' "$APP/Info.plist" | tr -d '\n ')"
+          test -f "$APP/PrivacyInfo.xcprivacy"
+          test -f "$APP/PlugIns/LunaraWidgetExtension.appex/PrivacyInfo.xcprivacy"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")" = "$(node -p "require('../../package.json').version")"
 
       - name: Zip the simulator app
         run: |
-          ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/Lunara-iphonesimulator-arm64.zip"
-          ls -l "$RUNNER_TEMP/Lunara-iphonesimulator-arm64.zip"
+          ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/Lunara-iphonesimulator-arm64-${{ matrix.gate_mode }}.zip"
+          ls -l "$RUNNER_TEMP/Lunara-iphonesimulator-arm64-${{ matrix.gate_mode }}.zip"
 
       - name: Upload simulator app
         uses: actions/upload-artifact@v4.6.2
         with:
-          name: ios-sim-app
-          path: ${{ runner.temp }}/Lunara-iphonesimulator-arm64.zip
+          name: ${{ matrix.artifact }}
+          path: ${{ runner.temp }}/Lunara-iphonesimulator-arm64-${{ matrix.gate_mode }}.zip
           if-no-files-found: error
           retention-days: 30
 

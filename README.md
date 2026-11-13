@@ -206,9 +206,23 @@ Lunara opens with **Sign in with publik**, before onboarding, the PIN lock and
 the tabs. The link opens in the system browser (Safari view on iPhone, a Custom
 Tab on Android). While Lunara is in the foreground it checks the sign-in every
 3 seconds; it stops in the background and checks again at once when you come
-back. After sign-in an adult picks **Get a plan**, **Connect your plan** or
-**Use my own key**; "Use my own key" keeps the Anthropic / OpenAI paths above
-exactly as they were. You can change the choice later in Settings → publik.
+back. Then onboarding asks your age. After that, an adult picks **Get a plan**,
+**Connect your plan** or **Use my own key** (a person under 18 never sees this
+screen); "Use my own key" keeps the Anthropic / OpenAI paths above exactly as
+they were. You can change the choice later in Settings → publik.
+
+Build settings (one environment value each at `pnpm build:native` time,
+`src/lib/buildFlags.ts`):
+
+| Setting | Values | Effect |
+|---|---|---|
+| `PUBLIK_GATE_MODE` | `required` (default), `optional` | `optional`: the tracker opens with no sign-in wall. Lunara asks for Sign in with publik (with "Not now") only when you open Lunara AI or tap Settings → publik → Sign in with publik. Usage counting starts only after sign-in. |
+| `APP_STORE_BUILD` | unset (default), `1` | `1`: no Claude subscription-token (`claude setup-token`) option. Anthropic and OpenAI API keys work in both. |
+
+The version and the build number come from `app/package.json` (`version`,
+`buildNumber`). Android reads that file; iOS keeps the same values and the
+display name (`APP_DISPLAY_NAME`) in `app/ios/App/Lunara.xcconfig`, and a test
+fails when they differ.
 
 - **Offline.** Only the first sign-in needs the network. After that, Lunara
   opens offline: when publik cannot be reached within 5 seconds, the app opens
@@ -227,9 +241,18 @@ exactly as they were. You can change the choice later in Settings → publik.
   `SIMCTL_CHILD_PUBLIK_SELF_TEST=1`; Android: `--es PUBLIK_SELF_TEST 1`). The
   app prints `publik self-test: ok lunara <version>` after a real wallet check
   and exits.
+- **Delete account.** Settings → Danger zone → Delete account says what is
+  deleted (the publik account, for all publik apps), deletes Lunara's publik
+  data on this phone, asks separately before it deletes cycle data, then opens
+  publik's deletion page in the in-app browser. Settings → publik → Sign out
+  signs this phone out and keeps your data.
+- **Health data and AI.** Before Lunara AI sends a tracker category to an AI
+  provider for the first time, it shows who gets the data and which kinds.
+  "Not now" sends nothing.
 - **Test builds.** `.github/workflows/mobile-test-builds.yml` builds a debug
-  APK (`android-debug-apk`) and an unsigned arm64 iOS simulator app
-  (`ios-sim-app`), then runs the self-test in a simulator. It never releases.
+  APK (`android-debug-apk`) and two unsigned arm64 iOS simulator apps, both
+  App Store builds: `ios-sim-app` (gate required) and `ios-sim-app-optional`
+  (gate optional). Each runs the self-test in a simulator. It never releases.
 
 ## Disclaimer
 

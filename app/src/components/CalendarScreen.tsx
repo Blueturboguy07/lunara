@@ -230,6 +230,11 @@ export function CalendarScreen() {
             ? 'Changes save on this device immediately.'
             : 'Tap any day to log or edit. Fertility estimates must not be used as contraception.'}
         </p>
+        {!editingPeriods && (
+          <p className="muted medical-advice-note" style={{ textAlign: 'center' }}>
+            This app does not give medical advice. Check with a doctor.
+          </p>
+        )}
       </div>
     </div>
   )

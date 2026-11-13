@@ -1,5 +1,7 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  acceptedAnthropicCredential,
+  anthropicCredentialHint,
   anthropicCredentialKind,
   ANTHROPIC_OAUTH_BETA,
   askAssistant,
@@ -313,5 +315,45 @@ describe('assistant transport', () => {
     expect(failure).toBeInstanceOf(PublikApiError)
     expect((failure as PublikApiError).kind).toBe('disconnected')
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('APP_STORE_BUILD: no Claude subscription token', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  it('off (today): a `claude setup-token` token is accepted next to API keys', () => {
+    expect(acceptedAnthropicCredential('sk-ant-oat01-token')).toBe('cli-token')
+    expect(acceptedAnthropicCredential('sk-ant-api03-key')).toBe('api-key')
+    expect(anthropicCredentialHint()).toContain('claude setup-token')
+  })
+
+  it('on: the token is refused before any request; API keys (Anthropic, OpenAI) still work', async () => {
+    vi.stubEnv('APP_STORE_BUILD', '1')
+    expect(acceptedAnthropicCredential('sk-ant-oat01-token')).toBeNull()
+    expect(acceptedAnthropicCredential('sk-ant-api03-key')).toBe('api-key')
+    expect(anthropicCredentialHint()).not.toContain('setup-token')
+
+    const never = vi.fn(async () => anthropicReply('should not be reached'))
+    await expect(
+      askAssistant({ provider: 'anthropic', apiKey: 'sk-ant-oat01-token', model: DEFAULT_ANTHROPIC_MODEL }, history, {}, never),
+    ).rejects.toThrow(/API keys only/)
+    expect(never).not.toHaveBeenCalled()
+
+    const keyed = vi.fn(async () => anthropicReply('An API-key answer.'))
+    await expect(
+      askAssistant({ provider: 'anthropic', apiKey: 'sk-ant-api03-key', model: DEFAULT_ANTHROPIC_MODEL }, history, {}, keyed),
+    ).resolves.toBe('An API-key answer.')
+
+    const openai = vi.fn(async () =>
+      new Response(JSON.stringify({ output: [{ type: 'message', content: [{ type: 'output_text', text: 'An OpenAI answer.' }] }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+    await expect(
+      askAssistant({ provider: 'openai', apiKey: 'sk-proj-key', model: DEFAULT_OPENAI_MODEL }, history, {}, openai),
+    ).resolves.toBe('An OpenAI answer.')
   })
 })

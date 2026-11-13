@@ -1,3 +1,4 @@
+import { Browser } from '@capacitor/browser'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { useEffect, useRef, useState } from 'react'
 import {
@@ -19,13 +20,18 @@ import {
 } from '../db/schema'
 import type { Envelope } from '../crypto/vault'
 import { applyImport, collectExport, decryptImport, encryptedExport, shareOrDownload } from '../db/transfer'
+import { signInWithPublik } from '../components/PublikGate'
 import { pushBackup, restoreBackup } from '../lib/backup'
+import { gateMode } from '../lib/buildFlags'
 import { localToday } from '../lib/dates'
 import {
+  accountDeletionUrl,
+  deletePublikDataOnThisPhone,
   disconnectPublik,
   fetchPublikWallet,
   hasPublikKey,
   isAdultBirthYear,
+  signedInHere,
   publikStatusLine,
   setChoice,
   setUsageCounting,
@@ -151,6 +157,8 @@ export function Settings() {
   const [hasPublik, setHasPublik] = useState(false)
   const [publikLine, setPublikLine] = useState('Ready')
   const [usageOn, setUsageOn] = useState(true)
+  const [signedIn, setSignedIn] = useState(false)
+  const optionalGate = gateMode() === 'optional'
   const [vaultLabel, setVaultLabel] = useState(isNative ? 'Checking…' : 'Session memory')
   const [biometrics, setBiometrics] = useState<BiometricStatus | null>(null)
   const [health, setHealth] = useState<HealthPlatformStatus | null>(null)
@@ -172,10 +180,12 @@ export function Settings() {
       getWidgetStatus(),
       hasPublikKey(),
       usageCountingOn(),
+      signedInHere(),
     ])
-      .then(([openAiKey, anthropicKey, vault, biometricStatus, healthStatus, widgetStatus, publikKey, counting]) => {
+      .then(([openAiKey, anthropicKey, vault, biometricStatus, healthStatus, widgetStatus, publikKey, counting, signedInNow]) => {
         if (!alive) return
         setUsageOn(counting)
+        setSignedIn(signedInNow)
         setHasOpenAiKey(Boolean(openAiKey))
         setHasAnthropicKey(Boolean(anthropicKey))
         setHasPublik(publikKey)
@@ -525,11 +535,82 @@ export function Settings() {
     }
   }
 
+  const signInAgainText = optionalGate
+    ? 'Sign in again from Settings > publik or from Lunara AI.'
+    : 'Lunara asks you to sign in with publik the next time it opens.'
+
   async function disconnectPublikApi() {
     await disconnectPublik()
     setHasPublik(false)
+    setSignedIn(false)
     setPublikLine('Ready')
-    setStatus('publik API disconnected from this phone. Lunara asks you to sign in with publik the next time it opens.')
+    setStatus(`publik API disconnected from this phone. ${signInAgainText}`)
+  }
+
+  /** Optional gate mode: the publik row asks for Sign in with publik ("Not now" changes nothing). */
+  async function signIn() {
+    const result = await signInWithPublik()
+    if (!result) return
+    setSignedIn(true)
+    setHasPublik(true)
+    setStatus('You signed in with publik.')
+  }
+
+  /** Sign out: revoke this phone's publik key and forget the sign-in. Cycle data stays. */
+  async function signOut() {
+    if (!confirm('Sign out of publik on this phone? Your cycle data stays on this phone.')) return
+    await disconnectPublik()
+    if (!optionalGate) {
+      location.reload() // required mode: the sign-in screen comes back at once
+      return
+    }
+    setHasPublik(false)
+    setSignedIn(false)
+    setPublikLine('Ready')
+    setStatus(`You signed out of publik. ${signInAgainText}`)
+  }
+
+  /**
+   * Delete account (App Store 5.1.1(v)): 1) say what is deleted; 2) delete
+   * the publik data on this phone, and the cycle data only if the person also
+   * wants that; 3) open publik's deletion page in the in-app browser, where the
+   * person deletes the publik account itself.
+   */
+  async function deleteAccount() {
+    if (
+      !confirm(
+        'Delete your publik account?\n\nThis deletes the publik account for ALL publik apps, not only Lunara. Lunara now signs this phone out and deletes its publik data here. Then publikhq.com opens, where you confirm the deletion.',
+      )
+    )
+      return
+    await deletePublikDataOnThisPhone()
+    const alsoCycleData = confirm(
+      'Also delete your cycle data on this phone?\n\nOK deletes all Lunara logs, notes and settings on this phone. Cancel keeps them.',
+    )
+    if (alsoCycleData) {
+      await clearSecureSecrets()
+      await db.delete()
+    }
+    const url = accountDeletionUrl()
+    const restart = alsoCycleData || !optionalGate
+    if (isNative) {
+      if (restart) {
+        const handle = await Browser.addListener('browserFinished', () => {
+          void handle.remove()
+          location.reload()
+        })
+      }
+      await Browser.open({ url })
+    } else {
+      window.open(url, '_blank', 'noopener,noreferrer')
+      if (restart) location.reload()
+    }
+    if (!restart) {
+      setHasPublik(false)
+      setSignedIn(false)
+      setPublikLine('Ready')
+      setStatus('Lunara deleted its publik data on this phone. Finish the account deletion on publikhq.com.')
+    }
   }
 
   async function toggleUsageCounting() {
@@ -545,7 +626,11 @@ export function Settings() {
 
   async function askAiChoiceAgain() {
     await setChoice(null)
-    setStatus('Lunara asks how to pay for AI the next time it opens.')
+    setStatus(
+      optionalGate
+        ? 'Lunara asks how to pay for AI the next time you open Lunara AI.'
+        : 'Lunara asks how to pay for AI the next time it opens.',
+    )
   }
 
   async function removeAiKey() {
@@ -1127,20 +1212,37 @@ export function Settings() {
       )}
 
       <Section title="publik">
+        {optionalGate && !signedIn && (
+          <button className="setting-row" onClick={() => void signIn()}>
+            <span>Sign in with publik</span>
+            <span className="muted">›</span>
+          </button>
+        )}
         <button className="setting-row" onClick={() => void toggleUsageCounting()}>
           <span>Count my use</span>
           <span className="muted">{usageOn ? 'On ›' : 'Off ›'}</span>
         </button>
-        {s.adult && (
+        {s.adult && signedIn && (
           <button className="setting-row" onClick={() => void askAiChoiceAgain()}>
             <span>How Lunara AI is paid for</span>
             <span className="muted">Ask again ›</span>
           </button>
         )}
+        {signedIn && (
+          <button className="setting-row" onClick={() => void signOut()}>
+            <span>Sign out</span>
+            <span className="muted">›</span>
+          </button>
+        )}
         <p className="microcopy" style={{ padding: '4px 0 12px' }}>
-          You signed in with publik. Usage counting sends only “app opened” and “still open”, with a
-          random ID, the app version and the phone type. It never sends your logs, cycle dates or
-          any other health data.
+          {signedIn
+            ? 'You signed in with publik. '
+            : optionalGate
+              ? 'Lunara works without an account. Sign in with publik to use Lunara AI and its plan. '
+              : ''}
+          Usage counting starts only after you sign in. It sends only “app opened” and “still open”,
+          with a random ID, the app version and the phone type. It never sends your logs, cycle
+          dates or any other health data.
         </p>
       </Section>
 
@@ -1149,6 +1251,14 @@ export function Settings() {
           <span>Delete all data</span>
           <span>›</span>
         </button>
+        <button className="setting-row" onClick={() => void deleteAccount()} style={{ color: 'var(--red-500)' }}>
+          <span>Delete account</span>
+          <span>›</span>
+        </button>
+        <p className="microcopy" style={{ padding: '4px 0 12px' }}>
+          Delete account deletes your publik account (for all publik apps) on publikhq.com. Lunara
+          first deletes its publik data on this phone and asks before it deletes any cycle data.
+        </p>
       </Section>
 
       <p className="muted" style={{ textAlign: 'center', marginTop: 8, lineHeight: 1.5 }}>

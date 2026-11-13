@@ -16,6 +16,7 @@ export const SECRET_KEYS: string[] = [
   SK.publikCardSeen,
   SK.publikChoice,
   SK.publikTelemetryId,
+  SK.aiHealthConsent,
 ]
 
 export interface ExportPayload {

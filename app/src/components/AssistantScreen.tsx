@@ -2,9 +2,12 @@ import { Browser } from '@capacitor/browser'
 import { useEffect, useRef, useState } from 'react'
 import { getSetting, removeSetting, setSetting, SK } from '../db/schema'
 import {
+  acceptedAnthropicCredential,
+  anthropicCredentialHint,
   anthropicCredentialKind,
   ANTHROPIC_MODELS,
   askAssistantDetailed,
+  claudeSubscriptionTokensAllowed,
   CLI_TOKEN_PREFIX,
   DEFAULT_ANTHROPIC_MODEL,
   DEFAULT_OPENAI_MODEL,
@@ -19,6 +22,16 @@ import {
   type AssistantConsent,
 } from '../lib/assistantContext'
 import { screenAssistantUrgency } from '../lib/assistantSafety'
+import { gateMode } from '../lib/buildFlags'
+import {
+  allowHealthSharing,
+  HEALTH_KIND_LABELS,
+  healthDestination,
+  healthKindsNeedingConsent,
+  selectedHealthKinds,
+  type HealthDestination,
+  type HealthKind,
+} from '../lib/healthConsent'
 import {
   DEFAULT_PUBLIK_MODEL,
   disconnectPublik,
@@ -138,6 +151,9 @@ export function AssistantScreen() {
   const [starterMicros, setStarterMicros] = useState<number | null>(null)
   const [costSentence, setCostSentence] = useState(PUBLIK_WHY_IT_COSTS)
   const [publikCard, setPublikCard] = useState<PublikCard | null>(null)
+  // The first message that sends tracker data to a provider waits for this screen (lib/healthConsent.ts).
+  const [healthAsk, setHealthAsk] = useState<{ text: string; kinds: HealthKind[]; destination: HealthDestination } | null>(null)
+  const subscriptionTokens = claudeSubscriptionTokensAllowed()
   const scroller = useRef<HTMLDivElement>(null)
   const composerInput = useRef<HTMLTextAreaElement>(null)
 
@@ -350,8 +366,12 @@ export function AssistantScreen() {
     try {
       const suppliedKey = keyInput.trim()
       if (suppliedKey) {
-        if (provider === 'anthropic' && anthropicCredentialKind(suppliedKey) === null) {
-          setError('Anthropic credentials start with sk-ant- (an API key or a `claude setup-token` token).')
+        if (provider === 'anthropic' && acceptedAnthropicCredential(suppliedKey) === null) {
+          setError(
+            subscriptionTokens
+              ? 'Anthropic credentials start with sk-ant- (an API key or a `claude setup-token` token).'
+              : 'Paste an Anthropic API key (sk-ant-api…). This version does not take Claude subscription tokens.',
+          )
           return
         }
         if (provider === 'openai' && !suppliedKey.startsWith('sk-')) {
@@ -373,7 +393,7 @@ export function AssistantScreen() {
       if (!apiKey && !suppliedKey) {
         setError(
           provider === 'anthropic'
-            ? 'Add an Anthropic API key, or paste a token from `claude setup-token`.'
+            ? anthropicCredentialHint()
             : 'Add an OpenAI project key, or choose another provider.',
         )
         return
@@ -409,7 +429,11 @@ export function AssistantScreen() {
     setClaimUrl(null)
     setClaimState(null)
     setStarterMicros(null)
-    setNotice('publik API disconnected from this phone. Lunara asks you to sign in with publik the next time it opens.')
+    setNotice(
+      gateMode() === 'optional'
+        ? 'publik API disconnected from this phone. Sign in again from Settings > publik or from Lunara AI.'
+        : 'publik API disconnected from this phone. Lunara asks you to sign in with publik the next time it opens.',
+    )
   }
 
   async function dismissPublikCard() {
@@ -423,7 +447,7 @@ export function AssistantScreen() {
     await setSetting(SK.aiConsent, JSON.stringify(next))
   }
 
-  async function send(textOverride?: string) {
+  async function send(textOverride?: string, healthAllowed = false) {
     const text = (textOverride ?? input).trim()
     if (!text || busy) return
     if (!apiKey) {
@@ -432,16 +456,28 @@ export function AssistantScreen() {
         provider === 'publik'
           ? 'Connect publik API before sending a message, or use your own key.'
           : provider === 'anthropic'
-            ? 'Add an Anthropic key or CLI token before sending a message.'
+            ? subscriptionTokens
+              ? 'Add an Anthropic key or CLI token before sending a message.'
+              : 'Add an Anthropic API key before sending a message.'
             : 'Add an OpenAI key before sending a message.',
       )
       return
     }
 
+    const safetyIntercept = screenAssistantUrgency(text)
+    if (!safetyIntercept && !healthAllowed) {
+      // Health data goes to a provider only after the person allows it for that provider, once.
+      const destination = healthDestination(provider, baseUrl)
+      const missing = await healthKindsNeedingConsent(destination, selectedHealthKinds(consent))
+      if (missing.length > 0) {
+        setHealthAsk({ text, kinds: selectedHealthKinds(consent), destination })
+        return
+      }
+    }
+
     const next = [...messages, { role: 'user' as const, content: text }]
     setMessages(next)
     setInput('')
-    const safetyIntercept = screenAssistantUrgency(text)
     if (safetyIntercept) {
       setMessages([...next, { role: 'assistant', content: safetyIntercept.response }])
       setError(null)
@@ -488,6 +524,19 @@ export function AssistantScreen() {
     } finally {
       setBusy(false)
     }
+  }
+
+  async function allowHealthAndSend() {
+    if (!healthAsk) return
+    const { text, kinds, destination } = healthAsk
+    await allowHealthSharing(destination, kinds)
+    setHealthAsk(null)
+    await send(text, true)
+  }
+
+  function healthNotNow() {
+    setHealthAsk(null)
+    setNotice('Nothing was sent. Lunara AI does not send tracker data until you allow it. To ask without it, turn off the categories under Tracker context.')
   }
 
   function publikErrorAction(failure: PublikApiError): { label: string; run: () => void } | null {
@@ -572,6 +621,35 @@ export function AssistantScreen() {
           <LunaraMark decorative size={30} />
           <span>Preparing your private space…</span>
         </div>
+      ) : healthAsk ? (
+        <div className="overlay-body assistant-setup assistant-health-consent" role="alertdialog" aria-label="Share health data">
+          <section className="assistant-setup-intro">
+            <p className="eyebrow">Your permission</p>
+            <h3>Send health data to {healthAsk.destination.name}?</h3>
+            <p>Your next message carries this tracker data from this phone:</p>
+          </section>
+          <section className="card ai-setup-card">
+            <ul>
+              {healthAsk.kinds.map((kind) => (
+                <li key={kind} className="microcopy">{HEALTH_KIND_LABELS[kind]}</li>
+              ))}
+            </ul>
+            <p className="microcopy">
+              It goes to <strong>{healthAsk.destination.name}</strong> to answer your question.
+              {provider === 'publik' ? ` ${PUBLIK_DATA_PATH}` : ' That provider’s own terms apply to what it keeps.'}
+            </p>
+            <p className="microcopy">
+              Lunara sends only the categories you select, only with the message you send. Turn a
+              category off under Tracker context at any time.
+            </p>
+          </section>
+          <button className="cta" onClick={() => void allowHealthAndSend()}>
+            Allow and send
+          </button>
+          <button className="text-button" onClick={healthNotNow}>
+            Not now
+          </button>
+        </div>
       ) : publikCard && !setupOpen ? (
         <div className="overlay-body assistant-setup">
           <section className="assistant-setup-intro">
@@ -620,7 +698,7 @@ export function AssistantScreen() {
                 onClick={() => void chooseProvider('anthropic')}
               >
                 <span className="choice-icon">✳</span>
-                <span><strong>Anthropic</strong><small>API key or Claude CLI login</small></span>
+                <span><strong>Anthropic</strong><small>{subscriptionTokens ? 'API key or Claude CLI login' : 'Your API key'}</small></span>
               </button>
               <button
                 className={`choice-card compact ${provider === 'openai' ? 'selected' : ''}`}
@@ -678,7 +756,7 @@ export function AssistantScreen() {
             ) : provider === 'anthropic' ? (
               <>
                 <div className="field">
-                  <label htmlFor="assistant-key">Anthropic API key or CLI token</label>
+                  <label htmlFor="assistant-key">{subscriptionTokens ? 'Anthropic API key or CLI token' : 'Anthropic API key'}</label>
                   <input
                     id="assistant-key"
                     type="password"
@@ -686,7 +764,7 @@ export function AssistantScreen() {
                     autoCapitalize="none"
                     autoCorrect="off"
                     spellCheck={false}
-                    placeholder={apiKey ? 'Saved securely · enter to replace' : 'sk-ant-api… or sk-ant-oat…'}
+                    placeholder={apiKey ? 'Saved securely · enter to replace' : subscriptionTokens ? 'sk-ant-api… or sk-ant-oat…' : 'sk-ant-api…'}
                     value={keyInput}
                     onChange={(event) => setKeyInput(event.target.value)}
                   />
@@ -694,13 +772,16 @@ export function AssistantScreen() {
                     <small className="field-hint">
                       Currently using{' '}
                       {credentialKind === 'cli-token'
-                        ? 'a Claude CLI subscription token'
+                        ? subscriptionTokens
+                          ? 'a Claude CLI subscription token'
+                          : 'a Claude subscription token, which this version does not send. Paste an API key'
                         : 'a console API key'}
                       .
                     </small>
                   )}
                 </div>
 
+                {subscriptionTokens && (
                 <details className="assistant-key-fallback">
                   <summary>Use your Claude subscription instead (CLI login)</summary>
                   <p className="microcopy">
@@ -716,6 +797,7 @@ export function AssistantScreen() {
                     rerun the command to refresh it.
                   </p>
                 </details>
+                )}
 
                 <div className="field">
                   <label htmlFor="assistant-model">Model</label>
@@ -897,7 +979,7 @@ export function AssistantScreen() {
         </>
       )}
 
-      {!loading && !setupOpen && !publikCard && (
+      {!loading && !setupOpen && !publikCard && !healthAsk && (
         <form
           className="assistant-compose"
           onSubmit={(event) => {

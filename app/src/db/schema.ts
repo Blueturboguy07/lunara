@@ -695,6 +695,11 @@ export const SK = {
   publikChoice: 'publikChoice',
   publikTelemetryId: 'publikTelemetryId',
   publikUsage: 'publikUsage',
+  /**
+   * Lunara AI: which tracker categories the person allowed to go to which AI
+   * provider (lib/healthConsent.ts). Device-bound: a restored backup asks again.
+   */
+  aiHealthConsent: 'aiHealthConsent',
   backupEndpoint: 'backupEndpoint',
   reminderEmail: 'reminderEmail',
   reminderTime: 'reminderTime',

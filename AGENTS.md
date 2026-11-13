@@ -14,3 +14,6 @@
 - "Use my own key" (bring your own key) must keep working: the Anthropic and OpenAI provider paths stay.
 - Telemetry sends only `app_opened` and `active_session`. Never add health data or cycle data to it.
 - Test builds: `.github/workflows/mobile-test-builds.yml`. Do not build locally on the maintainer's Mac.
+- Build settings live in `app/src/lib/buildFlags.ts`: `PUBLIK_GATE_MODE` (`required` default, `optional`) and `APP_STORE_BUILD` (`1` removes the Claude subscription-token option). Add no other switch.
+- The version and build number come from `app/package.json`; iOS copies them in `app/ios/App/Lunara.xcconfig` (`src/lib/nativeVersion.test.ts` checks). Each target has a `PrivacyInfo.xcprivacy`: update it when native code uses a new required-reason API or sends new data.
+- Before Lunara AI sends a tracker category to a provider for the first time, `lib/healthConsent.ts` asks. Never send health data without that answer.

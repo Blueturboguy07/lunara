@@ -1,8 +1,12 @@
 import { Browser } from '@capacitor/browser'
 import { useEffect, useState, type ReactNode } from 'react'
+import { gateMode } from '../lib/buildFlags'
 import {
   applyChoiceToAi,
   ensureSignedIn,
+  needsSignInOnDemand,
+  openWithoutWall,
+  signInOnDemand,
   type GateAction,
   type GateResult,
   type GateScreen,
@@ -12,13 +16,19 @@ import { isNative } from '../native/runtime'
 import { LunaraMark } from './LunaraMark'
 
 /**
- * Sign in with publik, before any screen of Lunara's own (onboarding, the PIN
- * lock, the tabs). The words and the order of the screens come from the
+ * Sign in with publik. The words and the order of the screens come from the
  * publik module (lib/publik.ts); this file only draws them. Links open in the
  * system browser: SFSafariViewController on iOS, a Custom Tab on Android.
+ *
+ * PUBLIK_GATE_MODE (lib/buildFlags.ts):
+ *   required (default)  <PublikGate> is a wall before onboarding, the PIN lock and the tabs.
+ *                       After onboarding (the age is known), askPlanAfterOnboarding() shows
+ *                       the plan screen to an adult.
+ *   optional            <PublikGate> shows nothing at start. <RequirePublik> around Lunara AI
+ *                       and the Settings sign-in row asks for sign-in, with "Not now".
  */
 
-// One gate per app start, shared by every mount (React StrictMode mounts twice in development).
+// One screen at a time, shared by every mount (React StrictMode mounts twice in development).
 let shown: GateScreen | null = null
 let pick: ((action: GateAction) => void) | null = null
 const listeners = new Set<(screen: GateScreen | null) => void>()
@@ -48,41 +58,54 @@ const ui: GateUI = {
   },
 }
 
-let run: Promise<GateResult> | null = null
-
-function startGate(): Promise<GateResult> {
-  return (run ??= ensureSignedIn(ui).then(async (result) => {
-    // "Connect your plan" selects publik API for Lunara AI; "Use my own key" keeps the person's own provider.
-    if (result.chosenNow && result.choice) await applyChoiceToAi(result.choice).catch(() => undefined)
-    draw(null)
-    return result
-  }))
+/** "Connect your plan" selects publik API for Lunara AI; "Use my own key" keeps the person's own provider. */
+async function settle<T extends GateResult | null>(result: T): Promise<T> {
+  if (result?.chosenNow && result.choice) await applyChoiceToAi(result.choice).catch(() => undefined)
+  draw(null)
+  return result
 }
 
-export function PublikGate({ children }: { children: ReactNode }) {
+let wall: Promise<GateResult> | null = null
+let onDemand: Promise<GateResult | null> | null = null
+
+function startWall(): Promise<GateResult> {
+  return (wall ??= ensureSignedIn(ui).then(settle))
+}
+
+/** Optional mode: the gate on demand, one at a time. Resolves null after "Not now". */
+export function signInWithPublik(): Promise<GateResult | null> {
+  return (onDemand ??= signInOnDemand(ui)
+    .then(settle)
+    .finally(() => {
+      onDemand = null
+    }))
+}
+
+/**
+ * Required mode, when onboarding ends: the gate runs once more. The person is
+ * signed in, and now the age is known, so an adult sees the plan screen
+ * (a minor never does). Optional mode asks at Lunara AI instead.
+ */
+export function askPlanAfterOnboarding(): void {
+  if (gateMode() !== 'required') return
+  wall = null
+  void startWall()
+}
+
+function useGateScreen(): [GateScreen | null, boolean, (action: GateAction) => void] {
   const [screen, setScreen] = useState<GateScreen | null>(shown)
   const [busy, setBusy] = useState(false)
-  const [passed, setPassed] = useState(false)
-
   useEffect(() => {
-    let alive = true
     const listener = (next: GateScreen | null) => {
       setScreen(next)
       setBusy(false)
     }
     listeners.add(listener)
-    void startGate().then(() => {
-      if (alive) setPassed(true)
-    })
+    setScreen(shown)
     return () => {
-      alive = false
       listeners.delete(listener)
     }
   }, [])
-
-  if (passed) return <>{children}</>
-  if (!screen) return <div className="page page-loading" role="status" aria-label="Checking your publik sign-in" />
-
   function press(action: GateAction) {
     const resolve = pick
     if (!resolve) return
@@ -90,9 +113,12 @@ export function PublikGate({ children }: { children: ReactNode }) {
     setBusy(true)
     resolve(action)
   }
+  return [screen, busy, press]
+}
 
+function GateCard({ screen, busy, press, overlay }: { screen: GateScreen; busy: boolean; press: (action: GateAction) => void; overlay?: boolean }) {
   return (
-    <main className="startup-failure-shell publik-gate">
+    <main className={`startup-failure-shell publik-gate${overlay ? ' publik-gate-overlay' : ''}`} role={overlay ? 'dialog' : undefined} aria-modal={overlay ? true : undefined}>
       <div className="page startup-failure-page">
         <section className="card startup-failure-card publik-gate-card" aria-live="polite">
           <span className="startup-failure-mark" aria-hidden="true">
@@ -111,7 +137,7 @@ export function PublikGate({ children }: { children: ReactNode }) {
               <button
                 key={button.action}
                 type="button"
-                className={index === 0 ? 'cta' : 'cta secondary'}
+                className={index === 0 ? 'cta' : button.action === 'not_now' ? 'text-button' : 'cta secondary'}
                 disabled={busy}
                 onClick={() => press(button.action)}
               >
@@ -119,8 +145,72 @@ export function PublikGate({ children }: { children: ReactNode }) {
               </button>
             ))}
           </div>
+          {screen.id === 'sign_in' && (
+            <p className="microcopy publik-gate-note">
+              publik counts when this app opens. You can turn this off in Settings.
+            </p>
+          )}
         </section>
       </div>
     </main>
   )
+}
+
+/** Any gate screen asked while the app is on screen (the plan after onboarding, an on-demand sign-in). */
+function GateOverlay() {
+  const [screen, busy, press] = useGateScreen()
+  return screen ? <GateCard screen={screen} busy={busy} press={press} overlay /> : null
+}
+
+export function PublikGate({ children }: { children: ReactNode }) {
+  const required = gateMode() === 'required'
+  const [screen, busy, press] = useGateScreen()
+  const [passed, setPassed] = useState(!required)
+
+  useEffect(() => {
+    let alive = true
+    if (required) {
+      void startWall().then(() => {
+        if (alive) setPassed(true)
+      })
+    } else {
+      void openWithoutWall()
+    }
+    return () => {
+      alive = false
+    }
+  }, [required])
+
+  if (passed)
+    return (
+      <>
+        {children}
+        <GateOverlay />
+      </>
+    )
+  if (!screen) return <div className="page page-loading" role="status" aria-label="Checking your publik sign-in" />
+  return <GateCard screen={screen} busy={busy} press={press} />
+}
+
+/**
+ * Optional mode: sign in first, then show `children` (Lunara AI). "Not now"
+ * calls onCancel and shows nothing. Required mode: the wall already did it.
+ */
+export function RequirePublik({ children, onCancel }: { children: ReactNode; onCancel: () => void }) {
+  const [ready, setReady] = useState(gateMode() === 'required')
+  useEffect(() => {
+    if (ready) return
+    let alive = true
+    void (async () => {
+      const result = (await needsSignInOnDemand()) ? await signInWithPublik() : true
+      if (!alive) return
+      if (result) setReady(true)
+      else onCancel()
+    })()
+    return () => {
+      alive = false
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+  return ready ? <>{children}</> : null
 }

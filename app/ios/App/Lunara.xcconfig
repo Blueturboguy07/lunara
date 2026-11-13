@@ -1,0 +1,15 @@
+// Lunara build settings for the App and the widget (both targets inherit them
+// from the project level).
+//
+// The source of the version and the build number is app/package.json
+// ("version", "buildNumber"). Android reads that file directly
+// (android/app/build.gradle); this file keeps the same two values for Xcode,
+// and src/lib/nativeVersion.test.ts fails when they differ.
+// An upload to App Store Connect needs a higher build number each time:
+// raise "buildNumber" in package.json and CURRENT_PROJECT_VERSION here.
+MARKETING_VERSION = 0.2.1
+CURRENT_PROJECT_VERSION = 1
+
+// The name under the icon. Info.plist reads it as $(APP_DISPLAY_NAME); the
+// widget shows "$(APP_DISPLAY_NAME) Cycle".
+APP_DISPLAY_NAME = Lunara

@@ -967,7 +967,8 @@ function Header({
 function Disclaimer() {
   return (
     <p className="disclaimer">
-      Lunara is not a medical device. Predictions are estimates and are not contraception.
+      Lunara is not a medical device. Predictions are estimates and are not contraception.{' '}
+      <strong>This app does not give medical advice. Check with a doctor.</strong>
     </p>
   )
 }

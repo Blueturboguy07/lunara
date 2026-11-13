@@ -19,6 +19,7 @@ import {
 } from '../db/schema'
 import {
   ANTHROPIC_MODELS,
+  claudeSubscriptionTokensAllowed,
   DEFAULT_ANTHROPIC_MODEL,
   DEFAULT_OPENAI_MODEL,
   type AssistantProvider,
@@ -27,6 +28,7 @@ import { localToday } from '../lib/dates'
 import {
   DEFAULT_PUBLIK_MODEL,
   dollars,
+  gateAsksPlanHere,
   markPublikCardSeen,
   provisionPublik,
   PUBLIK_BUILD,
@@ -522,7 +524,8 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
       draft.goal === 'peri'
     ) next.push('sleep')
     next.push('summary')
-    if ((age ?? 0) >= 18) next.push('ai')
+    // On a phone the publik gate asks how to pay for AI after onboarding (lib/publik.ts), so this step is for browser builds.
+    if ((age ?? 0) >= 18 && !gateAsksPlanHere()) next.push('ai')
     next.push('finish')
     return next
   }, [age, draft.goal, draft.sleepImpact, draft.trackingAreas, hormonalMethod])
@@ -800,23 +803,29 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
       }
 
       await putHealthProfile(profile)
+      // The AI step ran only when it is in the steps (browser builds); on a phone the gate's plan screen follows onboarding.
+      const aiStepShown = steps.includes('ai')
       await Promise.all([
         setSetting(SK.goal, draft.goal),
         setSetting(SK.birthYear, draft.birthYear),
         setSetting(SK.cycleLength, draft.typicalCycleLength),
-        setSetting(SK.aiProvider, provider),
-        setSetting(
-          SK.aiModel,
-          model.trim() ||
-            (provider === 'publik'
-              ? DEFAULT_PUBLIK_MODEL
-              : provider === 'anthropic'
-                ? DEFAULT_ANTHROPIC_MODEL
-                : DEFAULT_OPENAI_MODEL),
-        ),
-        setSetting(SK.aiBaseUrl, provider === 'publik' ? '' : baseUrl.trim()),
-        // The AI step answers the gate's plan question again; keep both the same.
-        age !== null && age >= 18 ? setChoice(provider === 'publik' ? 'publik' : 'own_key') : Promise.resolve(),
+        ...(aiStepShown
+          ? [
+              setSetting(SK.aiProvider, provider),
+              setSetting(
+                SK.aiModel,
+                model.trim() ||
+                  (provider === 'publik'
+                    ? DEFAULT_PUBLIK_MODEL
+                    : provider === 'anthropic'
+                      ? DEFAULT_ANTHROPIC_MODEL
+                      : DEFAULT_OPENAI_MODEL),
+              ),
+              setSetting(SK.aiBaseUrl, provider === 'publik' ? '' : baseUrl.trim()),
+              // The AI step answers the gate's plan question; keep both the same.
+              setChoice(provider === 'publik' ? 'publik' : 'own_key'),
+            ]
+          : []),
       ])
 
       if (draft.goal === 'pregnancy' && pregnancyDating) {
@@ -832,7 +841,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         }
       }
 
-      if (provider !== 'publik' && apiKey.trim()) {
+      if (aiStepShown && provider !== 'publik' && apiKey.trim()) {
         await setSecureSecret(
           provider === 'anthropic'
             ? SECURE_SECRET_KEYS.anthropicApiKey
@@ -1577,7 +1586,14 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
             />
           )}
           <OptionCard
-            option={{ id: 'anthropic', icon: '✳', label: 'Anthropic', detail: 'An API key, or a token from `claude setup-token` to use your Claude subscription.' }}
+            option={{
+              id: 'anthropic',
+              icon: '✳',
+              label: 'Anthropic',
+              detail: claudeSubscriptionTokensAllowed()
+                ? 'An API key, or a token from `claude setup-token` to use your Claude subscription.'
+                : 'Bring your own API key. Stored in Keychain or Keystore on native.',
+            }}
             selected={provider === 'anthropic'}
             onClick={() => chooseProvider('anthropic')}
           />
@@ -1620,7 +1636,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         ) : provider === 'anthropic' ? (
           <div className="card ai-setup-card">
             <div className="field">
-              <label htmlFor="anthropic-key">Anthropic API key or CLI token</label>
+              <label htmlFor="anthropic-key">{claudeSubscriptionTokensAllowed() ? 'Anthropic API key or CLI token' : 'Anthropic API key'}</label>
               <input
                 id="anthropic-key"
                 type="password"
@@ -1645,11 +1661,13 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
                 ))}
               </select>
             </div>
-            <p className="microcopy">
-              To bill answers to a Claude subscription instead of API credits, run{' '}
-              <code>claude setup-token</code> on a computer where you are signed in and paste the
-              token here. Lunara cannot run the CLI itself from a mobile app.
-            </p>
+            {claudeSubscriptionTokensAllowed() && (
+              <p className="microcopy">
+                To bill answers to a Claude subscription instead of API credits, run{' '}
+                <code>claude setup-token</code> on a computer where you are signed in and paste the
+                token here. Lunara cannot run the CLI itself from a mobile app.
+              </p>
+            )}
           </div>
         ) : (
           <div className="card ai-setup-card">

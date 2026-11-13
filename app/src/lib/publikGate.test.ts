@@ -134,7 +134,21 @@ vi.mock('./providerFetch', () => ({
   },
 }))
 
-import { _resetPublikForTests, ensureSignedIn, gateScreen, type GateScreen, type GateUI } from './publik'
+import { gateMode, isAppStoreBuild } from './buildFlags'
+import {
+  _resetPublikForTests,
+  accountDeletionUrl,
+  deletePublikDataOnThisPhone,
+  ensureSignedIn,
+  gateScreen,
+  loadLaunchOptions,
+  needsSignInOnDemand,
+  openWithoutWall,
+  signedInHere,
+  signInOnDemand,
+  type GateScreen,
+  type GateUI,
+} from './publik'
 
 const WORDS = {
   title: 'Sign in with publik',
@@ -196,6 +210,7 @@ beforeEach(() => {
 afterEach(() => {
   _resetPublikForTests()
   vi.useRealTimers()
+  vi.unstubAllEnvs()
 })
 
 describe('the gate words', () => {
@@ -470,5 +485,165 @@ describe('usage counting can be turned off', () => {
     await vi.advanceTimersByTimeAsync(1_000)
     await run
     expect(telemetryCalls()).toHaveLength(0)
+  })
+})
+
+describe('the plan screen waits until the age is known (required mode)', () => {
+  it('first start: sign-in only; after onboarding saves an adult age, the gate asks the plan', async () => {
+    settings.store.delete('birthYear') // a first start: onboarding has not asked the age yet
+    net.wallets = [anonymous, anonymous, claimedEmpty]
+    const first = scriptedUI()
+    const run = ensureSignedIn(first.ui)
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(await run).toMatchObject({ choice: null, chosenNow: false })
+    expect(first.screens.map((s) => s.title)).toEqual([WORDS.title, WORDS.title])
+    expect(telemetryCalls()).toHaveLength(1) // signed in: counting starts
+
+    // Onboarding saved the age (an adult). The gate runs again (PublikGate askPlanAfterOnboarding).
+    settings.store.set('birthYear', '1990')
+    const after = scriptedUI({ [WORDS.chooseTitle]: 'Use my own key' })
+    const again = ensureSignedIn(after.ui)
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(await again).toMatchObject({ choice: 'own_key', chosenNow: true })
+    expect(after.screens.map((s) => s.title)).toEqual([WORDS.chooseTitle])
+    expect(telemetryCalls()).toHaveLength(1) // one app_opened per start
+  })
+
+  it('after onboarding saves a minor age, the gate never asks the plan', async () => {
+    settings.store.set('birthYear', String(new Date().getFullYear() - 14))
+    net.wallets = [claimedEmpty]
+    const { ui, screens } = scriptedUI()
+    const run = ensureSignedIn(ui)
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(await run).toMatchObject({ choice: null })
+    expect(screens).toEqual([])
+  })
+})
+
+describe('PUBLIK_GATE_MODE and APP_STORE_BUILD build settings', () => {
+  it('gate mode is required unless the build says optional', () => {
+    expect(gateMode()).toBe('required')
+    vi.stubEnv('PUBLIK_GATE_MODE', 'optional')
+    expect(gateMode()).toBe('optional')
+    vi.stubEnv('PUBLIK_GATE_MODE', ' Optional ')
+    expect(gateMode()).toBe('optional')
+    vi.stubEnv('PUBLIK_GATE_MODE', 'off')
+    expect(gateMode()).toBe('required')
+  })
+
+  it('APP_STORE_BUILD is off unless set to 1 or true', () => {
+    expect(isAppStoreBuild()).toBe(false)
+    vi.stubEnv('APP_STORE_BUILD', '1')
+    expect(isAppStoreBuild()).toBe(true)
+    vi.stubEnv('APP_STORE_BUILD', 'true')
+    expect(isAppStoreBuild()).toBe(true)
+    vi.stubEnv('APP_STORE_BUILD', '0')
+    expect(isAppStoreBuild()).toBe(false)
+  })
+})
+
+describe('required mode: the wall', () => {
+  it('no screen offers "Not now"', async () => {
+    const { ui, screens } = scriptedUI()
+    void ensureSignedIn(ui)
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(screens.length).toBeGreaterThan(0)
+    expect(screens.flatMap((s) => s.buttons.map((b) => b.action))).not.toContain('not_now')
+  })
+})
+
+describe('optional mode: no wall, sign-in on demand', () => {
+  it('opens with no screen and no request when this phone never signed in', async () => {
+    await openWithoutWall()
+    await vi.advanceTimersByTimeAsync(31 * 60_000)
+    expect(net.calls).toEqual([]) // no /installs, no /wallet, no /telemetry
+    expect(await signedInHere()).toBe(false)
+    expect(await needsSignInOnDemand()).toBe(true)
+  })
+
+  it('a phone that signed in before counts the open at start, with no wallet call', async () => {
+    vault.store.set('publik-api-key', 'pk_live_gatetest')
+    settings.store.set('publikClaimState', 'claimed')
+    settings.store.set('publikChoice', 'own_key')
+    await openWithoutWall()
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(walletCalls()).toHaveLength(0)
+    expect(telemetryCalls()).toHaveLength(1)
+    expect(JSON.parse(telemetryCalls()[0]!.body!)).toMatchObject({ event: 'app_opened', app: 'lunara' })
+    expect(await needsSignInOnDemand()).toBe(false)
+  })
+
+  it('"Not now" on the sign-in screen resolves null and sends no usage event', async () => {
+    const { ui, screens } = scriptedUI({ [WORDS.title]: 'Not now' })
+    const run = signInOnDemand(ui)
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(await run).toBeNull()
+    expect(screens[0]!.buttons.map((b) => b.label)).toEqual(['Sign in with publik', 'Not now'])
+    expect(screens[0]!.body).toBe(WORDS.signInBody) // the same gate words
+    expect(telemetryCalls()).toHaveLength(0)
+  })
+
+  it('sign in from Lunara AI, then the plan screen; counting starts only after sign-in', async () => {
+    net.wallets = [anonymous, anonymous, claimedEmpty]
+    const { ui, screens } = scriptedUI({ [WORDS.chooseTitle]: 'Use my own key' })
+    const run = signInOnDemand(ui)
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(telemetryCalls()).toHaveLength(0) // still anonymous
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(await run).toMatchObject({ choice: 'own_key', chosenNow: true, offline: false })
+    expect(screens.map((s) => s.title)).toEqual([WORDS.title, WORDS.title, WORDS.chooseTitle])
+    expect(screens.at(-1)!.buttons.map((b) => b.label)).toEqual(['Get a plan', 'Use my own key', 'Not now'])
+    expect(telemetryCalls()).toHaveLength(1)
+    expect(await needsSignInOnDemand()).toBe(false)
+  })
+
+  it('"Not now" on the plan screen keeps the sign-in and asks the plan again next time', async () => {
+    net.wallets = [claimedEmpty]
+    const { ui } = scriptedUI({ [WORDS.chooseTitle]: 'Not now' })
+    const run = signInOnDemand(ui)
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(await run).toMatchObject({ choice: null, chosenNow: false })
+    expect(await signedInHere()).toBe(true)
+    expect(await needsSignInOnDemand()).toBe(true) // an adult with no answer yet
+    settings.store.set('birthYear', String(new Date().getFullYear() - 15))
+    expect(await needsSignInOnDemand()).toBe(false) // a minor never sees the plan screen
+  })
+
+  it('the self-test also runs in optional mode', async () => {
+    native.launch = { PUBLIK_SELF_TEST: '1' }
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    void openWithoutWall()
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(native.selfTestLines).toEqual(['publik self-test: ok lunara 0.2.1'])
+    log.mockRestore()
+  })
+})
+
+describe('Delete account', () => {
+  it('names publik\'s deletion page; the test hook moves it with every other call', async () => {
+    expect(accountDeletionUrl()).toBe('https://publikhq.com/settings/profile#delete-account-title')
+    native.launch = { PUBLIK_API_BASE_URL: 'http://127.0.0.1:8787/api/v1' }
+    await loadLaunchOptions()
+    expect(accountDeletionUrl()).toBe('http://127.0.0.1:8787/settings/profile#delete-account-title')
+  })
+
+  it('revokes the key and deletes the publik data on this phone, but not the cycle data or "Count my use: Off"', async () => {
+    net.wallets = [claimedPlan]
+    settings.store.set('publikChoice', 'publik')
+    const run = ensureSignedIn(scriptedUI().ui)
+    await vi.advanceTimersByTimeAsync(1_000)
+    await run
+    settings.store.set('publikUsage', 'off')
+    settings.store.set('publikTelemetryId', '1b4e28ba-2fa1-4d2e-8b6f-2b3a4c5d6e7f')
+    await deletePublikDataOnThisPhone()
+    const revoke = net.calls.find((c) => c.url.endsWith('/installs/revoke'))
+    expect(revoke).toMatchObject({ method: 'POST', auth: 'Bearer pk_live_gatetest' })
+    expect(vault.store.has('publik-api-key')).toBe(false)
+    for (const key of ['publikInstallId', 'publikClaimUrl', 'publikClaimState', 'publikChoice', 'publikTelemetryId']) {
+      expect(settings.store.has(key)).toBe(false)
+    }
+    expect(settings.store.get('publikUsage')).toBe('off')
+    expect(settings.store.get('birthYear')).toBe('1990')
+    expect(await signedInHere()).toBe(false)
   })
 })

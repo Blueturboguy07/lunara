@@ -1,4 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk'
+import { isAppStoreBuild } from './buildFlags'
 import { providerFetch } from './providerFetch'
 import {
   DEFAULT_PUBLIK_ENDPOINT,
@@ -55,6 +56,28 @@ export type VendorProvider = Exclude<AssistantProvider, 'publik'>
 export type AnthropicCredentialKind = 'api-key' | 'cli-token'
 
 export const ANTHROPIC_OAUTH_BETA = 'oauth-2025-04-20'
+
+/**
+ * APP_STORE_BUILD=1 (lib/buildFlags.ts) removes the Claude subscription-token
+ * option: Anthropic does not let third-party apps use Claude plan credentials.
+ * Anthropic and OpenAI API keys work in every build.
+ */
+export function claudeSubscriptionTokensAllowed(): boolean {
+  return !isAppStoreBuild()
+}
+
+/** The Anthropic credential this build accepts: a console API key, plus a `claude setup-token` token outside App Store builds. */
+export function acceptedAnthropicCredential(key: string): AnthropicCredentialKind | null {
+  const kind = anthropicCredentialKind(key)
+  return kind === 'cli-token' && !claudeSubscriptionTokensAllowed() ? null : kind
+}
+
+/** What to ask for when no Anthropic credential is saved. */
+export function anthropicCredentialHint(): string {
+  return claudeSubscriptionTokensAllowed()
+    ? 'Add an Anthropic API key, or paste a token from `claude setup-token`.'
+    : 'Add an Anthropic API key (sk-ant-api…).'
+}
 export const CLI_TOKEN_PREFIX = 'sk-ant-oat'
 export const ANTHROPIC_API_KEY_PREFIX = 'sk-ant-api'
 
@@ -116,7 +139,9 @@ function apiError(provider: VendorProvider, status: number): Error {
     return new Error(
       provider === 'openai'
         ? 'OpenAI rejected that key. Add a fresh project key in AI settings.'
-        : 'Anthropic rejected that credential. A CLI token from `claude setup-token` expires — generate a new one, or paste a console API key.',
+        : claudeSubscriptionTokensAllowed()
+          ? 'Anthropic rejected that credential. A CLI token from `claude setup-token` expires — generate a new one, or paste a console API key.'
+          : 'Anthropic rejected that API key. Add a fresh key in AI settings.',
     )
   }
   if (status === 402) return new Error('That account has no available credits.')
@@ -142,11 +167,19 @@ async function askAnthropic(
 ): Promise<string> {
   const credential = config.apiKey?.trim()
   if (!credential) {
-    throw new Error('Add an Anthropic key or a `claude setup-token` CLI token before sending a message.')
+    throw new Error(
+      claudeSubscriptionTokensAllowed()
+        ? 'Add an Anthropic key or a `claude setup-token` CLI token before sending a message.'
+        : 'Add an Anthropic API key before sending a message.',
+    )
   }
   const kind = anthropicCredentialKind(credential)
   if (kind === null) {
     throw new Error('That does not look like an Anthropic credential (expected sk-ant-…).')
+  }
+  if (kind === 'cli-token' && !claudeSubscriptionTokensAllowed()) {
+    // A token saved by an earlier build is never sent from an App Store build.
+    throw new Error('This version of Lunara takes Anthropic API keys only (sk-ant-api…). Add one in AI settings.')
   }
 
   // A CLI token is an OAuth credential: Bearer header plus the OAuth beta.
