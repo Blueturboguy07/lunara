@@ -75,8 +75,12 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3.2.2
+      # ubuntu-latest ships the Android SDK (ANDROID_HOME). android-actions/setup-android
+      # v3.2.2 fails there today: its sdkmanager call asks for the removed "tools" package.
+      - name: Show the preinstalled Android SDK
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          ls "$ANDROID_HOME/platforms" "$ANDROID_HOME/build-tools"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4.4.1
@@ -181,7 +185,7 @@ jobs:
           SIMCTL_CHILD_PUBLIK_SELF_TEST=1 SIMCTL_CHILD_DO_NOT_TRACK=1 \
             xcrun simctl launch --console-pty --terminate-running-process "$UDID" app.lunara.mobile > "$LOG" 2>&1 &
           LAUNCH=$!
-          for _ in $(seq 1 180); do
+          for _ in $(seq 1 300); do
             if grep -a -q 'publik self-test:' "$LOG"; then break; fi
             sleep 1
           done

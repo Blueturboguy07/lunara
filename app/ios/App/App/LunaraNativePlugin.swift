@@ -134,17 +134,20 @@ public final class LunaraNativePlugin: CAPPlugin, CAPBridgedPlugin {
             kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
         ]
 
-        let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
-        if updateStatus == errSecItemNotFound {
+        var status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if status == errSecItemNotFound {
             var insert = query
             attributes.forEach { insert[$0.key] = $0.value }
-            let status = SecItemAdd(insert as CFDictionary, nil)
-            guard status == errSecSuccess else {
-                call.reject(keychainMessage(status), "KEYCHAIN_WRITE_FAILED")
-                return
-            }
-        } else if updateStatus != errSecSuccess {
-            call.reject(keychainMessage(updateStatus), "KEYCHAIN_WRITE_FAILED")
+            status = SecItemAdd(insert as CFDictionary, nil)
+        }
+        #if targetEnvironment(simulator)
+        if status == errSecMissingEntitlement {
+            UserDefaults.standard.set(value, forKey: simulatorVaultKey(key))
+            status = errSecSuccess
+        }
+        #endif
+        guard status == errSecSuccess else {
+            call.reject(keychainMessage(status), "KEYCHAIN_WRITE_FAILED")
             return
         }
 
@@ -163,6 +166,16 @@ public final class LunaraNativePlugin: CAPPlugin, CAPBridgedPlugin {
 
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
+        #if targetEnvironment(simulator)
+        if status == errSecMissingEntitlement {
+            if let stored = UserDefaults.standard.string(forKey: simulatorVaultKey(key)) {
+                call.resolve(["value": stored])
+            } else {
+                call.resolve(["value": NSNull()])
+            }
+            return
+        }
+        #endif
         if status == errSecItemNotFound {
             call.resolve(["value": NSNull()])
             return
@@ -183,7 +196,13 @@ public final class LunaraNativePlugin: CAPPlugin, CAPBridgedPlugin {
             return
         }
 
-        let status = SecItemDelete(keychainQuery(key: key) as CFDictionary)
+        var status = SecItemDelete(keychainQuery(key: key) as CFDictionary)
+        #if targetEnvironment(simulator)
+        if status == errSecMissingEntitlement {
+            UserDefaults.standard.removeObject(forKey: simulatorVaultKey(key))
+            status = errSecSuccess
+        }
+        #endif
         guard status == errSecSuccess || status == errSecItemNotFound else {
             call.reject(keychainMessage(status), "KEYCHAIN_DELETE_FAILED")
             return
@@ -196,13 +215,32 @@ public final class LunaraNativePlugin: CAPPlugin, CAPBridgedPlugin {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: keychainService
         ]
-        let status = SecItemDelete(query as CFDictionary)
+        var status = SecItemDelete(query as CFDictionary)
+        #if targetEnvironment(simulator)
+        if status == errSecMissingEntitlement {
+            let prefix = simulatorVaultKey("")
+            for name in UserDefaults.standard.dictionaryRepresentation().keys where name.hasPrefix(prefix) {
+                UserDefaults.standard.removeObject(forKey: name)
+            }
+            status = errSecSuccess
+        }
+        #endif
         guard status == errSecSuccess || status == errSecItemNotFound else {
             call.reject(keychainMessage(status), "KEYCHAIN_DELETE_FAILED")
             return
         }
         call.resolve()
     }
+
+    #if targetEnvironment(simulator)
+    /// Simulator builds only; a device build never compiles this. An unsigned simulator app
+    /// (the CI test build `ios-sim-app`) has no entitlements, so the Keychain answers
+    /// errSecMissingEntitlement. Only then does the vault keep its values in the app's own
+    /// defaults, so sign-in and own keys still work in that test build.
+    private func simulatorVaultKey(_ key: String) -> String {
+        "\(keychainService).simulator.\(key)"
+    }
+    #endif
 
     private func validatedKey(_ key: String?) -> String? {
         guard let key, !key.isEmpty, key.count <= 128 else { return nil }
