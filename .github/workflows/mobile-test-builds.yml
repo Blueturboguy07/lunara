@@ -199,26 +199,42 @@ jobs:
           echo "Simulator: $UDID"
           xcrun simctl boot "$UDID" || true
           xcrun simctl bootstatus "$UDID" -b
+          echo "Booted: $(date -u +%T)"
           xcrun simctl install "$UDID" "$APP"
+          echo "Installed: $(date -u +%T)"
+          # Never print a publik key or token from a log.
+          mask() { sed -E 's/(pk|pat|pbt)_[A-Za-z0-9_-]{4,}/\1_[masked]/g; s/(Bearer )[^ "]+/\1[masked]/g'; }
           LOG="$RUNNER_TEMP/self-test.log"
-          : > "$LOG"
-          SIMCTL_CHILD_PUBLIK_SELF_TEST=1 SIMCTL_CHILD_DO_NOT_TRACK=1 \
-            xcrun simctl launch --console-pty --terminate-running-process "$UDID" app.lunara.mobile > "$LOG" 2>&1 &
-          LAUNCH=$!
-          for _ in $(seq 1 300); do
-            if grep -a -q 'publik self-test:' "$LOG"; then break; fi
-            sleep 1
+          LINE=""
+          # A freshly booted runner simulator can be slow to start the first app: two tries.
+          for attempt in 1 2; do
+            : > "$LOG"
+            echo "Launch $attempt: $(date -u +%T)"
+            SIMCTL_CHILD_PUBLIK_SELF_TEST=1 SIMCTL_CHILD_DO_NOT_TRACK=1 \
+              xcrun simctl launch --console-pty --terminate-running-process "$UDID" app.lunara.mobile > "$LOG" 2>&1 &
+            LAUNCH=$!
+            for _ in $(seq 1 240); do
+              if grep -a -q 'publik self-test:' "$LOG"; then break; fi
+              sleep 1
+            done
+            sleep 2
+            kill "$LAUNCH" 2>/dev/null || true
+            tr -d '\r' < "$LOG" > "$LOG.txt"
+            LINE=$(grep -a -m1 '^publik self-test:' "$LOG.txt" || true)
+            echo "Launch $attempt ended: $(date -u +%T)"
+            if [ -n "$LINE" ]; then break; fi
+            echo "No self-test line yet. Launch output:"
+            tail -n 40 "$LOG.txt" | mask
+            xcrun simctl terminate "$UDID" app.lunara.mobile 2>/dev/null || true
           done
-          sleep 2
-          kill "$LAUNCH" 2>/dev/null || true
-          tr -d '\r' < "$LOG" > "$LOG.txt"
-          LINE=$(grep -a -m1 '^publik self-test:' "$LOG.txt" || true)
           echo "self-test line: ${LINE:-<none>}"
           case "$LINE" in
             "publik self-test: ok lunara "*) ;;
             *)
               echo "::error::The built app did not print 'publik self-test: ok lunara <version>'."
-              tail -n 80 "$LOG.txt"
+              tail -n 80 "$LOG.txt" | mask
+              echo "App log (last 10 minutes):"
+              xcrun simctl spawn "$UDID" log show --last 10m --style compact --predicate 'process == "App"' 2>/dev/null | mask | tail -n 150 || true
               exit 1
               ;;
           esac
