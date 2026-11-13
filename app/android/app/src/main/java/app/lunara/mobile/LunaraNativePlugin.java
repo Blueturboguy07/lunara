@@ -6,6 +6,7 @@ import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.hardware.biometrics.BiometricManager;
 import android.hardware.biometrics.BiometricPrompt;
@@ -26,8 +27,12 @@ import android.health.connect.datatypes.SleepSessionRecord;
 import android.health.connect.datatypes.StepsRecord;
 import android.health.connect.datatypes.WeightRecord;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.CancellationSignal;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.OutcomeReceiver;
+import android.util.Log;
 import android.print.PrintDocumentAdapter;
 import android.print.PrintJob;
 import android.print.PrintManager;
@@ -105,6 +110,63 @@ public class LunaraNativePlugin extends Plugin {
         permissions.put("sleep", HealthPermissions.READ_SLEEP);
         permissions.put("steps", HealthPermissions.READ_STEPS);
         HEALTH_PERMISSIONS = Collections.unmodifiableMap(permissions);
+    }
+
+    // publik launch options and self-test
+
+    private static final String[] PUBLIK_LAUNCH_NAMES = {
+        "PUBLIK_API_BASE_URL", "PUBLIK_SELF_TEST", "DO_NOT_TRACK", "PUBLIK_TELEMETRY", "PUBLIK_TELEMETRY_DEBUG"
+    };
+
+    /**
+     * A value for the publik module (src/lib/publik.ts), from the launch intent:
+     * adb shell am start -n app.lunara.mobile/.MainActivity --es PUBLIK_API_BASE_URL http://10.0.2.2:8787/api/v1
+     * PUBLIK_API_BASE_URL, the test hook, works in a debuggable build only, so
+     * another app cannot point a release build at a different server.
+     */
+    @SuppressWarnings("deprecation")
+    private String publikLaunchValue(String name) {
+        if ("PUBLIK_API_BASE_URL".equals(name)) {
+            boolean debuggable = (getContext().getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
+            if (!debuggable) return null;
+        }
+        Activity activity = getActivity();
+        Intent intent = activity == null ? null : activity.getIntent();
+        Bundle extras = intent == null ? null : intent.getExtras();
+        Object raw = extras == null ? null : extras.get(name);
+        String value = raw == null ? null : String.valueOf(raw).trim();
+        return value == null || value.isEmpty() ? null : value;
+    }
+
+    @PluginMethod
+    public void publikLaunchOptions(PluginCall call) {
+        JSObject options = new JSObject();
+        for (String name : PUBLIK_LAUNCH_NAMES) {
+            String value = publikLaunchValue(name);
+            if (value != null) options.put(name, value);
+        }
+        call.resolve(options);
+    }
+
+    /** PUBLIK_SELF_TEST: print the module's one line (logcat tag "publik" and stdout), then end the app. */
+    @PluginMethod
+    public void publikSelfTestDone(PluginCall call) {
+        if (publikLaunchValue("PUBLIK_SELF_TEST") == null) {
+            call.reject("No publik self-test was requested.", "PUBLIK_NO_SELF_TEST");
+            return;
+        }
+        String line = call.getString("line", "publik self-test: failed: no result");
+        Log.i("publik", line);
+        System.out.println(line);
+        call.resolve();
+        Activity activity = getActivity();
+        new Handler(Looper.getMainLooper()).postDelayed(
+            () -> {
+                if (activity != null) activity.finishAndRemoveTask();
+                System.exit(0);
+            },
+            300
+        );
     }
 
     // Report export

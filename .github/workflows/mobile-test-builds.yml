@@ -1,0 +1,200 @@
+# Test builds of the phone apps, with Sign in with publik.
+#
+#   android-debug-apk  the test suite, then a debug APK (Android debug key)
+#   ios-sim-app        an unsigned arm64 iOS simulator app (zip), then the
+#                      publik self-test in a simulator: the built app prints
+#                      "publik self-test: ok lunara <version>" only after a
+#                      real GET /wallet answers
+#
+# It never tags and never publishes a release (release.yml does that).
+# The publik app token comes from the PUBLIK_APP_TOKEN secret at build time
+# (VITE_PUBLIK_APP_TOKEN, the app's existing way); it is never printed.
+#
+# Blind test hook, debug builds only:
+#   iOS:     xcrun simctl launch <device> app.lunara.mobile -PUBLIK_API_BASE_URL http://127.0.0.1:8787/api/v1
+#   Android: adb shell am start -n app.lunara.mobile/.MainActivity --es PUBLIK_API_BASE_URL http://10.0.2.2:8787/api/v1
+
+name: Mobile test builds
+
+on:
+  push:
+    branches: [signin-gate]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mobile-test-builds-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # A build machine is not a user (publikhq.com/skills/telemetry.md section 6).
+  DO_NOT_TRACK: "1"
+
+jobs:
+  android:
+    name: Tests + Android debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4.2.2
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4.1.0
+        with:
+          version: "12.8.1"
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4.4.0
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run test suite
+        run: pnpm test
+
+      - name: Build web bundle (native mode)
+        working-directory: app
+        env:
+          VITE_PUBLIK_APP_TOKEN: ${{ secrets.PUBLIK_APP_TOKEN }}
+        run: pnpm build:native
+
+      - name: Sync web assets into the Android project
+        working-directory: app
+        run: npx cap sync android
+
+      - name: Set up Java 21 (Temurin)
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3.2.2
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4.4.1
+
+      - name: Build debug APK
+        working-directory: app/android
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: android-debug-apk
+          path: app/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 30
+
+  ios:
+    name: iOS simulator app + publik self-test
+    runs-on: macos-15
+    timeout-minutes: 50
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4.2.2
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4.1.0
+        with:
+          version: "12.8.1"
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4.4.0
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build web bundle (native mode)
+        working-directory: app
+        env:
+          VITE_PUBLIK_APP_TOKEN: ${{ secrets.PUBLIK_APP_TOKEN }}
+        run: pnpm build:native
+
+      - name: Sync web assets into the iOS project
+        working-directory: app
+        run: npx cap sync ios
+
+      - name: Build unsigned arm64 simulator app
+        working-directory: app/ios/App
+        run: |
+          xcodebuild -version
+          xcodebuild \
+            -project App.xcodeproj \
+            -scheme App \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/dd" \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            -quiet build
+          APP="$RUNNER_TEMP/dd/Build/Products/Debug-iphonesimulator/App.app"
+          echo "APP=$APP" >> "$GITHUB_ENV"
+          echo "Architectures: $(lipo -archs "$APP/App")"
+
+      - name: Zip the simulator app
+        run: |
+          ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/Lunara-iphonesimulator-arm64.zip"
+          ls -l "$RUNNER_TEMP/Lunara-iphonesimulator-arm64.zip"
+
+      - name: Upload simulator app
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: ios-sim-app
+          path: ${{ runner.temp }}/Lunara-iphonesimulator-arm64.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: publik self-test in the simulator (the built app calls GET /wallet)
+        run: |
+          set -euo pipefail
+          UDID=$(xcrun simctl list devices available --json | python3 -c '
+          import json, sys
+          devices = json.load(sys.stdin)["devices"]
+          for runtime in sorted(devices, reverse=True):
+              if "iOS" not in runtime:
+                  continue
+              for device in devices[runtime]:
+                  if device["name"].startswith("iPhone"):
+                      print(device["udid"])
+                      sys.exit(0)
+          sys.exit("no iPhone simulator")
+          ')
+          echo "Simulator: $UDID"
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+          xcrun simctl install "$UDID" "$APP"
+          LOG="$RUNNER_TEMP/self-test.log"
+          : > "$LOG"
+          SIMCTL_CHILD_PUBLIK_SELF_TEST=1 SIMCTL_CHILD_DO_NOT_TRACK=1 \
+            xcrun simctl launch --console-pty --terminate-running-process "$UDID" app.lunara.mobile > "$LOG" 2>&1 &
+          LAUNCH=$!
+          for _ in $(seq 1 180); do
+            if grep -a -q 'publik self-test:' "$LOG"; then break; fi
+            sleep 1
+          done
+          sleep 2
+          kill "$LAUNCH" 2>/dev/null || true
+          tr -d '\r' < "$LOG" > "$LOG.txt"
+          LINE=$(grep -a -m1 '^publik self-test:' "$LOG.txt" || true)
+          echo "self-test line: ${LINE:-<none>}"
+          case "$LINE" in
+            "publik self-test: ok lunara "*) ;;
+            *)
+              echo "::error::The built app did not print 'publik self-test: ok lunara <version>'."
+              tail -n 80 "$LOG.txt"
+              exit 1
+              ;;
+          esac

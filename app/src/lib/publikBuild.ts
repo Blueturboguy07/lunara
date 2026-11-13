@@ -29,7 +29,7 @@ const envToken = (import.meta.env.VITE_PUBLIK_APP_TOKEN as string | undefined)?.
 export const PUBLIK_BUILD = {
   appSlug: 'lunara',
   /** Mirrors app/package.json `version`; publikBuild.test.ts pins them equal. */
-  appVersion: '0.2.0',
+  appVersion: '0.2.1',
   appToken: envToken || PUBLIK_APP_TOKEN_PLACEHOLDER,
   /** Compiled default; the `base_url` field of POST /installs wins over it (CONTRACT §1). */
   baseUrl: 'https://publikhq.com/api/v1',

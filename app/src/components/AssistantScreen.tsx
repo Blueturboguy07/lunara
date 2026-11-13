@@ -40,6 +40,8 @@ import {
   publikLocalState,
   publikStatusLine,
   PublikApiError,
+  resolveProvider,
+  setChoice,
   type PublikClaimState,
   type PublikEndpoint,
   type PublikUsage,
@@ -184,6 +186,9 @@ export function AssistantScreen() {
         publikLocalState(),
         publikEndpoint(),
       ])
+      // No saved provider yet: the answer to the gate's plan screen decides
+      // (Connect your plan = publik API); with no answer, a publik-capable build preselects publik.
+      const gateProvider = savedProvider ? null : await resolveProvider(null)
       const nextProvider: AssistantProvider =
         savedProvider === 'openai'
           ? 'openai'
@@ -191,9 +196,11 @@ export function AssistantScreen() {
             ? 'anthropic'
             : savedProvider === 'publik' && available
               ? 'publik'
-              : available
-                ? 'publik' // fresh install on a publik-capable build: preselected
-                : 'anthropic'
+              : gateProvider?.kind === 'publik'
+                ? 'publik'
+                : available && (await getSetting(SK.publikChoice)) !== 'own_key'
+                  ? 'publik' // fresh install on a publik-capable build: preselected
+                  : 'anthropic'
 
       // One-time migration from the old Dexie implementation. Plaintext is
       // removed immediately after the secure bridge accepts it.
@@ -297,6 +304,7 @@ export function AssistantScreen() {
         setSetting(SK.aiModel, PUBLIK_MODELS.some((m) => m.id === model) ? model : DEFAULT_PUBLIK_MODEL),
         setSetting(SK.aiBaseUrl, ''),
         setSetting(SK.publikDisclosureVersion, String(PUBLIK_BUILD.disclosureVersion)),
+        setChoice('publik'),
       ])
       // The first-run card, immediately after POST /installs succeeds (CONTRACT §12.1).
       setPublikCard({
@@ -332,6 +340,7 @@ export function AssistantScreen() {
         setSetting(SK.aiProvider, 'publik'),
         setSetting(SK.aiModel, PUBLIK_MODELS.some((m) => m.id === cleanModel) ? cleanModel : DEFAULT_PUBLIK_MODEL),
         setSetting(SK.aiBaseUrl, ''),
+        setChoice('publik'),
       ])
       setModel(cleanModel)
       setSetupOpen(false)
@@ -357,6 +366,8 @@ export function AssistantScreen() {
         setSetting(SK.aiProvider, provider),
         setSetting(SK.aiModel, cleanModel),
         setSetting(SK.aiBaseUrl, baseUrl.trim()),
+        // The same answer as "Use my own key" on the gate's plan screen.
+        setChoice('own_key'),
       ])
       setModel(cleanModel)
       if (!apiKey && !suppliedKey) {
@@ -398,7 +409,7 @@ export function AssistantScreen() {
     setClaimUrl(null)
     setClaimState(null)
     setStarterMicros(null)
-    setNotice('publik API disconnected from this phone.')
+    setNotice('publik API disconnected from this phone. Lunara asks you to sign in with publik the next time it opens.')
   }
 
   async function dismissPublikCard() {

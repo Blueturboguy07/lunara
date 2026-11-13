@@ -24,7 +24,9 @@ public final class LunaraNativePlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "widgetStatus", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "publishWidgetSnapshot", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "clearWidgetSnapshot", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "printReport", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "printReport", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "publikLaunchOptions", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "publikSelfTestDone", returnType: CAPPluginReturnPromise)
     ]
 
     private let keychainService = "app.lunara.mobile.vault"
@@ -62,6 +64,49 @@ public final class LunaraNativePlugin: CAPPlugin, CAPBridgedPlugin {
                 call.reject("The report export sheet could not open.", "REPORT_EXPORT_UNAVAILABLE")
             }
         }
+    }
+
+    // MARK: publik launch options and self-test
+
+    private static let publikLaunchNames = [
+        "PUBLIK_API_BASE_URL", "PUBLIK_SELF_TEST", "DO_NOT_TRACK", "PUBLIK_TELEMETRY", "PUBLIK_TELEMETRY_DEBUG"
+    ]
+
+    /// A value for the publik module (src/lib/publik.ts): the process environment
+    /// (`SIMCTL_CHILD_PUBLIK_SELF_TEST=1 xcrun simctl launch ...`, or the Xcode scheme),
+    /// else a launch argument (`-PUBLIK_API_BASE_URL http://127.0.0.1:8787/api/v1`).
+    /// PUBLIK_API_BASE_URL, the test hook, works in a Debug build only.
+    private func publikLaunchValue(_ name: String) -> String? {
+        #if !DEBUG
+        if name == "PUBLIK_API_BASE_URL" { return nil }
+        #endif
+        let fromEnvironment = ProcessInfo.processInfo.environment[name]
+        let fromArguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)[name].map { "\($0)" }
+        guard let value = (fromEnvironment ?? fromArguments)?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+            return nil
+        }
+        return value
+    }
+
+    @objc public func publikLaunchOptions(_ call: CAPPluginCall) {
+        var options: [String: Any] = [:]
+        for name in Self.publikLaunchNames {
+            if let value = publikLaunchValue(name) { options[name] = value }
+        }
+        call.resolve(options)
+    }
+
+    /// PUBLIK_SELF_TEST: print the module's one line on stdout, then end the app.
+    @objc public func publikSelfTestDone(_ call: CAPPluginCall) {
+        guard publikLaunchValue("PUBLIK_SELF_TEST") != nil else {
+            call.reject("No publik self-test was requested.", "PUBLIK_NO_SELF_TEST")
+            return
+        }
+        let line = call.getString("line") ?? "publik self-test: failed: no result"
+        print(line)
+        fflush(stdout)
+        call.resolve()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { exit(0) }
     }
 
     // MARK: Secure vault

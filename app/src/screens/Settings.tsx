@@ -27,6 +27,9 @@ import {
   hasPublikKey,
   isAdultBirthYear,
   publikStatusLine,
+  setChoice,
+  setUsageCounting,
+  usageCountingOn,
 } from '../lib/publik'
 import { addDays } from '../engine/cycle'
 import {
@@ -147,6 +150,7 @@ export function Settings() {
   const [hasAnthropicKey, setHasAnthropicKey] = useState(false)
   const [hasPublik, setHasPublik] = useState(false)
   const [publikLine, setPublikLine] = useState('Ready')
+  const [usageOn, setUsageOn] = useState(true)
   const [vaultLabel, setVaultLabel] = useState(isNative ? 'Checking…' : 'Session memory')
   const [biometrics, setBiometrics] = useState<BiometricStatus | null>(null)
   const [health, setHealth] = useState<HealthPlatformStatus | null>(null)
@@ -167,9 +171,11 @@ export function Settings() {
       getHealthPlatformStatus(),
       getWidgetStatus(),
       hasPublikKey(),
+      usageCountingOn(),
     ])
-      .then(([openAiKey, anthropicKey, vault, biometricStatus, healthStatus, widgetStatus, publikKey]) => {
+      .then(([openAiKey, anthropicKey, vault, biometricStatus, healthStatus, widgetStatus, publikKey, counting]) => {
         if (!alive) return
+        setUsageOn(counting)
         setHasOpenAiKey(Boolean(openAiKey))
         setHasAnthropicKey(Boolean(anthropicKey))
         setHasPublik(publikKey)
@@ -523,7 +529,23 @@ export function Settings() {
     await disconnectPublik()
     setHasPublik(false)
     setPublikLine('Ready')
-    setStatus('publik API disconnected from this phone. Lunara AI will ask for a key or a reconnect next time.')
+    setStatus('publik API disconnected from this phone. Lunara asks you to sign in with publik the next time it opens.')
+  }
+
+  async function toggleUsageCounting() {
+    const next = !usageOn
+    await setUsageCounting(next)
+    setUsageOn(await usageCountingOn())
+    setStatus(
+      next
+        ? 'Usage counting is on. Lunara tells publik only that the app opened and is still open.'
+        : 'Usage counting is off. Lunara sends publik no usage events.',
+    )
+  }
+
+  async function askAiChoiceAgain() {
+    await setChoice(null)
+    setStatus('Lunara asks how to pay for AI the next time it opens.')
   }
 
   async function removeAiKey() {
@@ -1103,6 +1125,24 @@ export function Settings() {
           )}
         </Section>
       )}
+
+      <Section title="publik">
+        <button className="setting-row" onClick={() => void toggleUsageCounting()}>
+          <span>Count my use</span>
+          <span className="muted">{usageOn ? 'On ›' : 'Off ›'}</span>
+        </button>
+        {s.adult && (
+          <button className="setting-row" onClick={() => void askAiChoiceAgain()}>
+            <span>How Lunara AI is paid for</span>
+            <span className="muted">Ask again ›</span>
+          </button>
+        )}
+        <p className="microcopy" style={{ padding: '4px 0 12px' }}>
+          You signed in with publik. Usage counting sends only “app opened” and “still open”, with a
+          random ID, the app version and the phone type. It never sends your logs, cycle dates or
+          any other health data.
+        </p>
+      </Section>
 
       <Section title="Danger zone">
         <button className="setting-row" onClick={wipe} style={{ color: 'var(--red-500)' }}>

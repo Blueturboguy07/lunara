@@ -38,6 +38,8 @@ import {
   publikBalanceLine,
   publikLinkButtonLabel,
   PublikApiError,
+  readCredential,
+  setChoice,
   type PublikInstall,
 } from '../lib/publik'
 import { addDays, toEpochDay } from '../engine/cycle'
@@ -487,9 +489,11 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
     // the step itself is gated on the typed year, so only the build/vault checks matter here.
     if (!adult) return
     let alive = true
-    void publikAvailable({ assumeAdult: true }).then((ok) => {
+    void Promise.all([publikAvailable({ assumeAdult: true }), readCredential()]).then(([ok, credential]) => {
       if (!alive || !ok) return
       setPublikHere(true)
+      // "Use my own key" on the sign-in gate's plan screen: keep the own-key provider preselected.
+      if (credential?.choice === 'own_key') return
       setProvider((current) => (current === 'anthropic' && !apiKey.trim() ? 'publik' : current))
       setModel((current) => (current === DEFAULT_ANTHROPIC_MODEL ? DEFAULT_PUBLIK_MODEL : current))
     })
@@ -811,6 +815,8 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
                 : DEFAULT_OPENAI_MODEL),
         ),
         setSetting(SK.aiBaseUrl, provider === 'publik' ? '' : baseUrl.trim()),
+        // The AI step answers the gate's plan question again; keep both the same.
+        age !== null && age >= 18 ? setChoice(provider === 'publik' ? 'publik' : 'own_key') : Promise.resolve(),
       ])
 
       if (draft.goal === 'pregnancy' && pregnancyDating) {

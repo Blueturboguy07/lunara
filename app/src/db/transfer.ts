@@ -14,6 +14,8 @@ export const SECRET_KEYS: string[] = [
   SK.publikClaimUrl,
   SK.publikClaimState,
   SK.publikCardSeen,
+  SK.publikChoice,
+  SK.publikTelemetryId,
 ]
 
 export interface ExportPayload {

@@ -687,6 +687,14 @@ export const SK = {
   publikCostSentence: 'publikCostSentence',
   publikCardSeen: 'publikCardSeen',
   publikDisclosureVersion: 'publikDisclosureVersion',
+  /**
+   * Sign in with publik (lib/publik.ts): the answer to the plan screen
+   * ('publik' | 'own_key'), the random usage-counting ID, and 'off' when the
+   * person turned usage counting off. The choice and the ID are device-bound.
+   */
+  publikChoice: 'publikChoice',
+  publikTelemetryId: 'publikTelemetryId',
+  publikUsage: 'publikUsage',
   backupEndpoint: 'backupEndpoint',
   reminderEmail: 'reminderEmail',
   reminderTime: 'reminderTime',

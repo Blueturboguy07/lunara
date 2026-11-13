@@ -43,6 +43,9 @@ vi.mock('../db/schema', () => ({
     publikCostSentence: 'publikCostSentence',
     publikCardSeen: 'publikCardSeen',
     publikDisclosureVersion: 'publikDisclosureVersion',
+    publikChoice: 'publikChoice',
+    publikTelemetryId: 'publikTelemetryId',
+    publikUsage: 'publikUsage',
   },
   getSetting: async (key: string) => settings.store.get(key),
   setSetting: async (key: string, value: string) => {
@@ -165,7 +168,7 @@ describe('provisionPublik (CONTRACT §3.2)', () => {
     const body = JSON.parse(String(calls[0].init?.body))
     expect(body.app_token).toBe(build.token)
     expect(body.app_slug).toBe('lunara')
-    expect(body.app_version).toBe('0.2.0')
+    expect(body.app_version).toBe('0.2.1') // APP_VERSION, the module's literal
     expect(body.os).toBe('ios')
     expect(body.arch).toBeNull()
     expect(body.device_name).toBe('iPhone')

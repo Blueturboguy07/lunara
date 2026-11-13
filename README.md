@@ -192,12 +192,44 @@ in the cycle database and never in a backup. Nothing from your tracker is sent
 unless you tick the specific categories for that message.
 
 **For maintainers — the app token.** `app/src/lib/publikBuild.ts` carries the
-build's public app token. In git it is the placeholder `pat_lunara_REPLACE_ME`,
-which compiles and tests but hides the publik option; the publik-side mint
-script (`scripts/mint-app-token.mts` in the publik repo) mints
-`pat_lunara_<32 base36>` and writes it into that file in the same commit the
-publik install guide then pins. The token is public by design: it can only
-mint rate-limited anonymous installs; it holds no balance and reads nothing.
+build's public app token. The placeholder `pat_lunara_REPLACE_ME` compiles and
+tests but hides the publik option; the publik-side mint script
+(`scripts/mint-app-token.mts` in the publik repo) mints `pat_lunara_<32 base36>`
+and writes it into that file. A build can set `VITE_PUBLIK_APP_TOKEN` instead;
+the CI test builds use the `PUBLIK_APP_TOKEN` repo secret. The token is public
+by design: it can only mint rate-limited anonymous installs; it holds no
+balance and reads nothing.
+
+## Sign in with publik
+
+Lunara opens with **Sign in with publik**, before onboarding, the PIN lock and
+the tabs. The link opens in the system browser (Safari view on iPhone, a Custom
+Tab on Android). While Lunara is in the foreground it checks the sign-in every
+3 seconds; it stops in the background and checks again at once when you come
+back. After sign-in an adult picks **Get a plan**, **Connect your plan** or
+**Use my own key**; "Use my own key" keeps the Anthropic / OpenAI paths above
+exactly as they were. You can change the choice later in Settings → publik.
+
+- **Offline.** Only the first sign-in needs the network. After that, Lunara
+  opens offline: when publik cannot be reached within 5 seconds, the app opens
+  with the sign-in it already has. Your cycle data never depended on publik.
+- **Usage counting.** Lunara sends only `app_opened` and `active_session`, with
+  the app version, the phone OS and a random per-app ID. No health data, no
+  cycle data, no notes, ever. Turn it off in Settings → publik → Count my use,
+  or launch with `DO_NOT_TRACK=1` / `PUBLIK_TELEMETRY=0`.
+- **Test hook (debug builds only).** Launch with `PUBLIK_API_BASE_URL` (iOS
+  simulator: `xcrun simctl launch <device> app.lunara.mobile
+  -PUBLIK_API_BASE_URL http://127.0.0.1:8787/api/v1`; Android:
+  `adb shell am start -n app.lunara.mobile/.MainActivity --es
+  PUBLIK_API_BASE_URL http://10.0.2.2:8787/api/v1`) to point the app at a test
+  publik. Release builds ignore it at launch.
+- **Self-test.** Launch with `PUBLIK_SELF_TEST=1` (iOS simulator:
+  `SIMCTL_CHILD_PUBLIK_SELF_TEST=1`; Android: `--es PUBLIK_SELF_TEST 1`). The
+  app prints `publik self-test: ok lunara <version>` after a real wallet check
+  and exits.
+- **Test builds.** `.github/workflows/mobile-test-builds.yml` builds a debug
+  APK (`android-debug-apk`) and an unsigned arm64 iOS simulator app
+  (`ios-sim-app`), then runs the self-test in a simulator. It never releases.
 
 ## Disclaimer
 

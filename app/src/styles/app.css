@@ -98,6 +98,24 @@
   max-width: 10ch;
 }
 
+/* Sign in with publik (components/PublikGate.tsx): the same centred card. */
+.publik-gate .startup-failure-page {
+  width: 100%;
+}
+
+.publik-gate-card h1 {
+  max-width: none;
+}
+
+.publik-gate-note {
+  font-weight: 650;
+}
+
+.publik-gate-actions {
+  display: grid;
+  gap: 10px;
+}
+
 .startup-failure-details {
   color: var(--ink-500);
   font-size: 13px;
