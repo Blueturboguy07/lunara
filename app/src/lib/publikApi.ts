@@ -278,8 +278,14 @@ export function publikBalanceLine(balanceMicros: number | null, claimState: Publ
   return balanceMicros > 0 ? `${dollars(balanceMicros)} of free use` : LINK_FOR_FREE_USE
 }
 
-/** Adults only: the AI companion, and publik with it, is hidden under 18 everywhere. */
+/**
+ * Adults only: the AI companion, and publik with it, is hidden under 18 everywhere.
+ * Lunara knows only the birth year. A person born in year Y can still be 17 on
+ * the last day of Y+18, so the rule is: the current year minus the birth year
+ * is 19 or more. Then the person is 18 or older on every day of the year. (An
+ * 18-year-old born late in the year waits until January 1.)
+ */
 export function isAdultBirthYear(birthYear: string | undefined, now = new Date()): boolean {
   if (!birthYear || !/^\d{4}$/.test(birthYear)) return false
-  return now.getFullYear() - Number(birthYear) >= 18
+  return now.getFullYear() - Number(birthYear) >= 19
 }

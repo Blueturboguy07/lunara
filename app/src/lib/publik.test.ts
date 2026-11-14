@@ -59,7 +59,6 @@ vi.mock('../db/schema', () => ({
 
 const build = vi.hoisted(() => ({ token: 'pat_lunara_' + 'a'.repeat(32) }))
 vi.mock('./publikBuild', () => ({
-  PUBLIK_APP_TOKEN_PLACEHOLDER: 'pat_lunara_REPLACE_ME',
   PUBLIK_BUILD: {
     appSlug: 'lunara',
     appVersion: '0.2.0',

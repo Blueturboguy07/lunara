@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { isPublikAppToken, PUBLIK_APP_TOKEN_PLACEHOLDER, PUBLIK_BUILD, publikBuildAvailable } from './publikBuild'
+import { isPublikAppToken, PUBLIK_BUILD, PUBLIK_DEV_APP_TOKEN, publikBuildAvailable } from './publikBuild'
 
 describe('publik build constant', () => {
   it('mirrors package.json and the publik module so the gateway attributes usage to the right app version', () => {
@@ -23,10 +23,11 @@ describe('publik build constant', () => {
     expect(isPublikAppToken('')).toBe(false)
   })
 
-  it('is the committed token or a token the gateway would accept — never anything else', () => {
-    // The publik-side mint script wrote the minted token into this file; a
-    // half-edited value would compile and silently disable publik.
-    expect(PUBLIK_BUILD.appToken === PUBLIK_APP_TOKEN_PLACEHOLDER || isPublikAppToken(PUBLIK_BUILD.appToken)).toBe(true)
-    expect(publikBuildAvailable()).toBe(isPublikAppToken(PUBLIK_BUILD.appToken))
+  it('the committed dev token is a token the gateway accepts, and the build uses it only without VITE_PUBLIK_APP_TOKEN', () => {
+    // A half-edited value would compile and silently disable publik.
+    expect(isPublikAppToken(PUBLIK_DEV_APP_TOKEN)).toBe(true)
+    expect(isPublikAppToken(PUBLIK_BUILD.appToken)).toBe(true)
+    expect(publikBuildAvailable()).toBe(true)
+    if (!import.meta.env.VITE_PUBLIK_APP_TOKEN) expect(PUBLIK_BUILD.appToken).toBe(PUBLIK_DEV_APP_TOKEN)
   })
 })

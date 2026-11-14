@@ -8,6 +8,7 @@ import {
   askAssistantDetailed,
   DEFAULT_ANTHROPIC_MODEL,
   DEFAULT_OPENAI_MODEL,
+  openAiKeyProblem,
   type ChatMessage,
 } from './assistant'
 import { PublikApiError } from './publikApi'
@@ -355,5 +356,25 @@ describe('APP_STORE_BUILD: no Claude subscription token', () => {
     await expect(
       askAssistant({ provider: 'openai', apiKey: 'sk-proj-key', model: DEFAULT_OPENAI_MODEL }, history, {}, openai),
     ).resolves.toBe('An OpenAI answer.')
+  })
+})
+
+describe('the OpenAI slot never takes an Anthropic credential', () => {
+  it('names the problem for sk-ant- keys and tokens, and for keys that are not OpenAI keys', () => {
+    expect(openAiKeyProblem('sk-proj-abc')).toBeNull()
+    expect(openAiKeyProblem(' sk-abc ')).toBeNull()
+    expect(openAiKeyProblem('sk-ant-api03-key')).toMatch(/Anthropic credential/)
+    expect(openAiKeyProblem('sk-ant-oat01-token')).toMatch(/Anthropic credential/)
+    expect(openAiKeyProblem('pk_live_x')).toMatch(/does not look like an OpenAI API key/)
+  })
+
+  it('an sk-ant- key saved in the OpenAI slot is never sent, to OpenAI or to a custom service', async () => {
+    const never = vi.fn(async () => new Response('{}', { status: 200 }))
+    for (const baseUrl of [undefined, 'https://llm.example.org']) {
+      await expect(
+        askAssistant({ provider: 'openai', apiKey: 'sk-ant-api03-key', model: DEFAULT_OPENAI_MODEL, baseUrl }, history, {}, never),
+      ).rejects.toThrow(/Anthropic credential/)
+    }
+    expect(never).not.toHaveBeenCalled()
   })
 })

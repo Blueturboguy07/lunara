@@ -212,12 +212,23 @@ describe('publik endpoint from the install response (CONTRACT §1 base_url, §2 
   })
 })
 
-describe('adult gate', () => {
-  const now = new Date('2026-09-19T00:00:00Z')
-  it('is true at 18 and false below, unset or malformed', () => {
-    expect(isAdultBirthYear('2008', now)).toBe(true)
+describe('adult gate (Lunara knows only the birth year)', () => {
+  const now = new Date('2026-09-19T12:00:00')
+  it('is true when 19 or more years passed since the birth year; false below, unset or malformed', () => {
+    expect(isAdultBirthYear('2007', now)).toBe(true) // 18 or 19 today
+    expect(isAdultBirthYear('1990', now)).toBe(true)
+    expect(isAdultBirthYear('2008', now)).toBe(false) // 17 or 18 today: could be 17
     expect(isAdultBirthYear('2009', now)).toBe(false)
     expect(isAdultBirthYear(undefined, now)).toBe(false)
     expect(isAdultBirthYear('abcd', now)).toBe(false)
+  })
+
+  it('never lets a 17-year-old in, on any day of the year', () => {
+    // Born on December 31, 2008: 17 until December 31, 2026.
+    for (const day of ['2026-01-01T00:00:01', '2026-06-30T12:00:00', '2026-12-30T23:59:59', '2026-12-31T23:59:59']) {
+      expect(isAdultBirthYear('2008', new Date(day))).toBe(false)
+    }
+    // From January 1, 2027 every person born in 2008 is 18 or older.
+    expect(isAdultBirthYear('2008', new Date('2027-01-01T00:00:01'))).toBe(true)
   })
 })

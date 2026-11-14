@@ -80,14 +80,23 @@ import { isNative, nativePlatform } from '../native/runtime'
 import {
   clearSecureSecrets,
   deleteSecureSecret,
-  getSecureSecret,
+  getSecureSecretOrForget,
   SECURE_SECRET_KEYS,
   secureVaultStatus,
 } from '../native/secureVault'
-import { getWidgetStatus, type WidgetStatus } from '../native/widgets'
+import { clearWidgetSnapshot, getWidgetStatus, type WidgetStatus } from '../native/widgets'
 import { useApp } from '../state/appStore'
 
 const DEVICE_TIME_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+
+/**
+ * Delete all data, and Delete account with the cycle data: the data that lives
+ * outside the database goes too. The saved keys, the widget's last snapshot and
+ * every scheduled reminder. Each step runs even when another one fails.
+ */
+async function clearPhoneDataOutsideTheDatabase(): Promise<void> {
+  await Promise.allSettled([clearSecureSecrets(), clearWidgetSnapshot(), cancelMaterializedReminders(), cancelDailyReminder()])
+}
 
 function profileHealthPermission(
   authorization: HealthPlatformStatus['authorization'],
@@ -158,6 +167,8 @@ export function Settings() {
   const [publikLine, setPublikLine] = useState('Ready')
   const [usageOn, setUsageOn] = useState(true)
   const [signedIn, setSignedIn] = useState(false)
+  // Sign-out, Disconnect and Delete account show this while they run (the phone forgets first, then tells publik).
+  const [publikBusy, setPublikBusy] = useState(false)
   const optionalGate = gateMode() === 'optional'
   const [vaultLabel, setVaultLabel] = useState(isNative ? 'Checking…' : 'Session memory')
   const [biometrics, setBiometrics] = useState<BiometricStatus | null>(null)
@@ -172,8 +183,8 @@ export function Settings() {
   useEffect(() => {
     let alive = true
     void Promise.all([
-      getSecureSecret(SECURE_SECRET_KEYS.openAiApiKey),
-      getSecureSecret(SECURE_SECRET_KEYS.anthropicApiKey),
+      getSecureSecretOrForget(SECURE_SECRET_KEYS.openAiApiKey),
+      getSecureSecretOrForget(SECURE_SECRET_KEYS.anthropicApiKey),
       secureVaultStatus(),
       getBiometricStatus(),
       getHealthPlatformStatus(),
@@ -535,39 +546,51 @@ export function Settings() {
     }
   }
 
-  const signInAgainText = optionalGate
-    ? 'Sign in again from Settings > publik or from Lunara AI.'
-    : 'Lunara asks you to sign in with publik the next time it opens.'
+  const signInAgainText = 'Sign in again from Settings > publik or from Lunara AI.'
 
-  async function disconnectPublikApi() {
-    await disconnectPublik()
+  /**
+   * Every disconnect path: the phone forgets publik first, then tells publik
+   * (lib/publik.ts). Required mode: the sign-in screen comes back at once
+   * (PublikGate listens). Optional mode: this screen shows the new state.
+   */
+  async function signOutWith(run: () => Promise<void>, done: string): Promise<boolean> {
+    setPublikBusy(true)
+    setStatus('Signing out of publik on this phone…')
+    try {
+      await run()
+    } catch (reason) {
+      setStatus(reason instanceof Error ? reason.message : 'Could not sign out of publik.')
+      return false
+    } finally {
+      setPublikBusy(false)
+    }
     setHasPublik(false)
     setSignedIn(false)
     setPublikLine('Ready')
-    setStatus(`publik API disconnected from this phone. ${signInAgainText}`)
+    setStatus(done)
+    return true
+  }
+
+  async function disconnectPublikApi() {
+    await signOutWith(() => disconnectPublik(), `publik API disconnected from this phone. ${signInAgainText}`)
   }
 
   /** Optional gate mode: the publik row asks for Sign in with publik ("Not now" changes nothing). */
   async function signIn() {
-    const result = await signInWithPublik()
+    const result = await signInWithPublik().catch((reason: unknown) => {
+      setStatus(reason instanceof Error ? reason.message : 'Could not sign in with publik.')
+      return null
+    })
     if (!result) return
     setSignedIn(true)
     setHasPublik(true)
     setStatus('You signed in with publik.')
   }
 
-  /** Sign out: revoke this phone's publik key and forget the sign-in. Cycle data stays. */
+  /** Sign out: forget the sign-in on this phone, then revoke its publik key. Cycle data stays. */
   async function signOut() {
     if (!confirm('Sign out of publik on this phone? Your cycle data stays on this phone.')) return
-    await disconnectPublik()
-    if (!optionalGate) {
-      location.reload() // required mode: the sign-in screen comes back at once
-      return
-    }
-    setHasPublik(false)
-    setSignedIn(false)
-    setPublikLine('Ready')
-    setStatus(`You signed out of publik. ${signInAgainText}`)
+    await signOutWith(() => disconnectPublik(), `You signed out of publik. ${signInAgainText}`)
   }
 
   /**
@@ -579,22 +602,26 @@ export function Settings() {
   async function deleteAccount() {
     if (
       !confirm(
-        'Delete your publik account?\n\nThis deletes the publik account for ALL publik apps, not only Lunara. Lunara now signs this phone out and deletes its publik data here. Then publikhq.com opens, where you confirm the deletion.',
+        'Delete your publik account?\n\nThis deletes the publik account for ALL publik apps, not only Lunara. Lunara signs this phone out and deletes its publik data here. Then publikhq.com opens, where you confirm the deletion.',
       )
     )
       return
-    await deletePublikDataOnThisPhone()
     const alsoCycleData = confirm(
-      'Also delete your cycle data on this phone?\n\nOK deletes all Lunara logs, notes and settings on this phone. Cancel keeps them.',
+      'Also delete your cycle data on this phone?\n\nOK deletes all Lunara logs, notes, settings, the widget and the reminders on this phone. Cancel keeps them.',
     )
+    // With the cycle data, Lunara starts again when the browser closes; without it, required mode shows the sign-in screen at once.
+    const done = await signOutWith(
+      () => deletePublikDataOnThisPhone(undefined, { returnToGate: !alsoCycleData }),
+      'Lunara deleted its publik data on this phone. Finish the account deletion on publikhq.com.',
+    )
+    if (!done) return
     if (alsoCycleData) {
-      await clearSecureSecrets()
+      await clearPhoneDataOutsideTheDatabase()
       await db.delete()
     }
     const url = accountDeletionUrl()
-    const restart = alsoCycleData || !optionalGate
     if (isNative) {
-      if (restart) {
+      if (alsoCycleData) {
         const handle = await Browser.addListener('browserFinished', () => {
           void handle.remove()
           location.reload()
@@ -603,13 +630,7 @@ export function Settings() {
       await Browser.open({ url })
     } else {
       window.open(url, '_blank', 'noopener,noreferrer')
-      if (restart) location.reload()
-    }
-    if (!restart) {
-      setHasPublik(false)
-      setSignedIn(false)
-      setPublikLine('Ready')
-      setStatus('Lunara deleted its publik data on this phone. Finish the account deletion on publikhq.com.')
+      if (alsoCycleData) location.reload()
     }
   }
 
@@ -619,7 +640,7 @@ export function Settings() {
     setUsageOn(await usageCountingOn())
     setStatus(
       next
-        ? 'Usage counting is on. Lunara tells publik only that the app opened and is still open.'
+        ? 'Usage counting is on. After you sign in, Lunara tries to tell publik when the app opens and that it is still open.'
         : 'Usage counting is off. Lunara sends publik no usage events.',
     )
   }
@@ -785,9 +806,11 @@ export function Settings() {
 
   async function wipe() {
     if (!confirm('Delete ALL Lunara data on this device? This cannot be undone.')) return
-    // Revoke the publik key server-side first so a wiped phone does not leave a live key to idle out.
-    await disconnectPublik().catch(() => undefined)
-    await clearSecureSecrets()
+    setPublikBusy(true)
+    setStatus('Deleting all Lunara data on this phone…')
+    // Sign out of publik too (the key is revoked, so a wiped phone leaves no live key). Lunara restarts below.
+    await disconnectPublik(undefined, { returnToGate: false }).catch(() => undefined)
+    await clearPhoneDataOutsideTheDatabase()
     await db.delete()
     location.reload()
   }
@@ -1203,7 +1226,7 @@ export function Settings() {
             </span>
           </button>
           {(s.provider === 'publik' ? hasPublik : s.provider === 'anthropic' ? hasAnthropicKey : hasOpenAiKey) && (
-            <button className="setting-row" onClick={removeAiKey}>
+            <button className="setting-row" onClick={removeAiKey} disabled={publikBusy}>
               <span>{s.provider === 'publik' ? 'Disconnect publik API' : 'Remove saved credential'}</span>
               <span className="muted">›</span>
             </button>
@@ -1229,9 +1252,9 @@ export function Settings() {
           </button>
         )}
         {signedIn && (
-          <button className="setting-row" onClick={() => void signOut()}>
+          <button className="setting-row" onClick={() => void signOut()} disabled={publikBusy}>
             <span>Sign out</span>
-            <span className="muted">›</span>
+            <span className="muted">{publikBusy ? 'Signing out…' : '›'}</span>
           </button>
         )}
         <p className="microcopy" style={{ padding: '4px 0 12px' }}>
@@ -1240,18 +1263,18 @@ export function Settings() {
             : optionalGate
               ? 'Lunara works without an account. Sign in with publik to use Lunara AI and its plan. '
               : ''}
-          Usage counting starts only after you sign in. It sends only “app opened” and “still open”,
-          with a random ID, the app version and the phone type. It never sends your logs, cycle
-          dates or any other health data.
+          Usage counting starts only after you sign in. When it is on, Lunara tries to send publik
+          only “app opened” and “still open”, with a random ID, the app version and the phone type.
+          It never sends your logs, cycle dates or any other health data.
         </p>
       </Section>
 
       <Section title="Danger zone">
-        <button className="setting-row" onClick={wipe} style={{ color: 'var(--red-500)' }}>
+        <button className="setting-row" onClick={wipe} disabled={publikBusy} style={{ color: 'var(--red-500)' }}>
           <span>Delete all data</span>
           <span>›</span>
         </button>
-        <button className="setting-row" onClick={() => void deleteAccount()} style={{ color: 'var(--red-500)' }}>
+        <button className="setting-row" onClick={() => void deleteAccount()} disabled={publikBusy} style={{ color: 'var(--red-500)' }}>
           <span>Delete account</span>
           <span>›</span>
         </button>

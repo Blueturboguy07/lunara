@@ -78,6 +78,18 @@ export function anthropicCredentialHint(): string {
     ? 'Add an Anthropic API key, or paste a token from `claude setup-token`.'
     : 'Add an Anthropic API key (sk-ant-api…).'
 }
+/**
+ * Why a pasted key cannot go in the OpenAI slot, or null when it can. An
+ * Anthropic credential (sk-ant-…) is never sent to OpenAI or to a custom
+ * OpenAI-compatible service.
+ */
+export function openAiKeyProblem(key: string): string | null {
+  const trimmed = key.trim()
+  if (trimmed.startsWith('sk-ant-')) return 'This is an Anthropic credential. Choose Anthropic for it, not OpenAI.'
+  if (!trimmed.startsWith('sk-')) return 'That does not look like an OpenAI API key.'
+  return null
+}
+
 export const CLI_TOKEN_PREFIX = 'sk-ant-oat'
 export const ANTHROPIC_API_KEY_PREFIX = 'sk-ant-api'
 
@@ -266,6 +278,7 @@ async function askResponses(
       ? new PublikApiError('disconnected', 'publik API is not connected on this phone. Connect it in AI settings, or use your own key.')
       : new Error('Add an OpenAI API key before sending a message.')
   }
+  if (!publik && key.startsWith('sk-ant-')) throw new Error(openAiKeyProblem(key) ?? 'This key is not for OpenAI.')
   const endpoint = publik
     ? `${(config.publik ?? DEFAULT_PUBLIK_ENDPOINT).baseUrl}/responses`
     : `${cleanBaseUrl(config.baseUrl || 'https://api.openai.com')}/v1/responses`

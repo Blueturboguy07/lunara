@@ -11,6 +11,7 @@ import {
   CLI_TOKEN_PREFIX,
   DEFAULT_ANTHROPIC_MODEL,
   DEFAULT_OPENAI_MODEL,
+  openAiKeyProblem,
   type AssistantConfig,
   type AssistantProvider,
   type ChatMessage,
@@ -23,6 +24,7 @@ import {
 } from '../lib/assistantContext'
 import { screenAssistantUrgency } from '../lib/assistantSafety'
 import { gateMode } from '../lib/buildFlags'
+import { chatDestination, historyForSend, NEW_CHAT_NOTICE } from '../lib/chatHistory'
 import {
   allowHealthSharing,
   HEALTH_KIND_LABELS,
@@ -61,7 +63,7 @@ import {
 } from '../lib/publik'
 import {
   deleteSecureSecret,
-  getSecureSecret,
+  getSecureSecretOrForget,
   SECURE_SECRET_KEYS,
   secureVaultStatus,
   setSecureSecret,
@@ -133,6 +135,8 @@ export function AssistantScreen() {
   const [consent, setConsent] = useState<AssistantConsent>(NO_ASSISTANT_CONSENT)
   const [vaultLabel, setVaultLabel] = useState('secure storage')
   const [messages, setMessages] = useState<ChatMessage[]>([])
+  // The provider that received `messages` (lib/chatHistory.ts): history never goes to another one.
+  const [chatSentTo, setChatSentTo] = useState<string | null>(null)
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -195,8 +199,8 @@ export function AssistantScreen() {
         getSetting(SK.aiConsent),
         secureVaultStatus(),
         getSetting(SK.aiKey),
-        getSecureSecret(SECURE_SECRET_KEYS.openAiApiKey),
-        getSecureSecret(SECURE_SECRET_KEYS.anthropicApiKey),
+        getSecureSecretOrForget(SECURE_SECRET_KEYS.openAiApiKey),
+        getSecureSecretOrForget(SECURE_SECRET_KEYS.anthropicApiKey),
         publikAvailable(),
         hasPublikKey(),
         publikLocalState(),
@@ -227,7 +231,7 @@ export function AssistantScreen() {
       const key =
         nextProvider === 'publik'
           ? publikKey
-            ? await getSecureSecret(SECURE_SECRET_KEYS.publikApiKey)
+            ? await getSecureSecretOrForget(SECURE_SECRET_KEYS.publikApiKey)
             : null
           : nextProvider === 'anthropic'
             ? savedAnthropicKey
@@ -298,7 +302,10 @@ export function AssistantScreen() {
     setError(null)
     setNotice(null)
     setPublikError(null)
-    setApiKey(await getSecureSecret(vaultKeyFor(next)))
+    // A new provider starts a new chat: the earlier messages never go to it.
+    setMessages([])
+    setChatSentTo(null)
+    setApiKey(await getSecureSecretOrForget(vaultKeyFor(next)))
   }
 
   /** Consent first: only the "Continue with publik API" tap mints, never a load. */
@@ -308,7 +315,7 @@ export function AssistantScreen() {
     setError(null)
     try {
       const install = await provisionPublik(options)
-      const key = install.key ?? (await getSecureSecret(SECURE_SECRET_KEYS.publikApiKey))
+      const key = install.key ?? (await getSecureSecretOrForget(SECURE_SECRET_KEYS.publikApiKey))
       setApiKey(key)
       setPublikEndpointState(install.endpoint)
       setClaimUrl(install.claimUrl)
@@ -374,8 +381,9 @@ export function AssistantScreen() {
           )
           return
         }
-        if (provider === 'openai' && !suppliedKey.startsWith('sk-')) {
-          setError('That does not look like an OpenAI API key.')
+        const openAiProblem = provider === 'openai' ? openAiKeyProblem(suppliedKey) : null
+        if (openAiProblem) {
+          setError(openAiProblem)
           return
         }
         await setSecureSecret(vaultKeyFor(provider), suppliedKey)
@@ -418,8 +426,12 @@ export function AssistantScreen() {
 
   async function disconnect() {
     setPublikBusy(true)
+    setNotice('Disconnecting publik API…')
     try {
+      // Required mode: the sign-in screen comes back at once (PublikGate listens).
       await disconnectPublik()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Could not disconnect publik API.')
     } finally {
       setPublikBusy(false)
     }
@@ -475,8 +487,12 @@ export function AssistantScreen() {
       }
     }
 
-    const next = [...messages, { role: 'user' as const, content: text }]
+    // Earlier messages go only to the provider that received them (lib/chatHistory.ts).
+    const destination = chatDestination(provider, baseUrl)
+    const history = historyForSend({ destination: chatSentTo, messages }, destination)
+    const next = [...history.messages, { role: 'user' as const, content: text }]
     setMessages(next)
+    setChatSentTo(destination)
     setInput('')
     if (safetyIntercept) {
       setMessages([...next, { role: 'assistant', content: safetyIntercept.response }])
@@ -486,7 +502,7 @@ export function AssistantScreen() {
     }
     setBusy(true)
     setError(null)
-    setNotice(null)
+    setNotice(history.cleared ? NEW_CHAT_NOTICE : null)
     setPublikError(null)
     try {
       const approvedContext = await collectApprovedAssistantContext(consent)

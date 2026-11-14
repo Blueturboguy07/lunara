@@ -13,3 +13,13 @@ CURRENT_PROJECT_VERSION = 1
 // The name under the icon. Info.plist reads it as $(APP_DISPLAY_NAME); the
 // widget shows "$(APP_DISPLAY_NAME) Cycle".
 APP_DISPLAY_NAME = Lunara
+
+// The publik test hooks (PUBLIK_API_BASE_URL, PUBLIK_SELF_TEST; App/LunaraNativePlugin.swift)
+// are compiled only into a Debug build of the App made with PUBLIK_TEST_HOOKS=YES:
+//   xcodebuild ... -configuration Debug PUBLIK_TEST_HOOKS=YES   (CI test builds)
+// The Release configuration never adds the Swift flag, and the "Check the Release build"
+// phase (scripts/check-release-build.sh) fails an archive that has it.
+PUBLIK_TEST_HOOKS = NO
+LUNARA_TEST_HOOKS_CONDITION_YES = PUBLIK_TEST_HOOKS
+LUNARA_TEST_HOOKS_CONDITION_NO =
+LUNARA_TEST_HOOKS_CONDITION = $(LUNARA_TEST_HOOKS_CONDITION_$(PUBLIK_TEST_HOOKS))

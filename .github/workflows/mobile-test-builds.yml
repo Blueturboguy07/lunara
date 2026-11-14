@@ -1,6 +1,8 @@
 # Test builds of the phone apps, with Sign in with publik.
 #
-#   android-debug-apk  the test suite, then a debug APK (Android debug key)
+#   android-debug-apk  the test suite, the build checks, then a debug APK (Android
+#                      debug key). A second job runs its publik self-test in an
+#                      Android emulator.
 #   ios-sim-app           an unsigned arm64 iOS simulator app (zip), gate mode
 #                         "required" (Sign in with publik before any screen)
 #   ios-sim-app-optional  the same with PUBLIK_GATE_MODE=optional (no wall;
@@ -10,13 +12,19 @@
 #   simulator: the built app prints "publik self-test: ok lunara <version>"
 #   only after a real GET /wallet answers.
 #
+# These are TEST builds: the web bundle has PUBLIK_TEST_HOOKS=1, the APK
+# -PpublikTestHooks=true and the iOS app PUBLIK_TEST_HOOKS=YES. A release build
+# has none of them (release.yml; the Xcode Release check).
+#
 # It never tags and never publishes a release (release.yml does that).
 # The publik app token comes from the PUBLIK_APP_TOKEN secret at build time
-# (VITE_PUBLIK_APP_TOKEN, the app's existing way); it is never printed.
+# (VITE_PUBLIK_APP_TOKEN); every job fails when the secret is empty. It is never printed.
 #
-# Blind test hook, debug builds only:
-#   iOS:     xcrun simctl launch <device> app.lunara.mobile -PUBLIK_API_BASE_URL http://127.0.0.1:8787/api/v1
-#   Android: adb shell am start -n app.lunara.mobile/.MainActivity --es PUBLIK_API_BASE_URL http://10.0.2.2:8787/api/v1
+# The test hooks of these builds (a fake publik on this computer only):
+#   iOS:     SIMCTL_CHILD_PUBLIK_SELF_TEST=1 xcrun simctl launch <device> app.lunara.mobile
+#            xcrun simctl launch <device> app.lunara.mobile -PUBLIK_API_BASE_URL http://127.0.0.1:8787/api/v1
+#   Android: adb shell am start -a android.intent.action.MAIN -n app.lunara.mobile/.MainActivity --es PUBLIK_SELF_TEST 1
+#            adb shell am start -a android.intent.action.MAIN -n app.lunara.mobile/.MainActivity --es PUBLIK_API_BASE_URL http://10.0.2.2:8787/api/v1
 
 name: Mobile test builds
 
@@ -42,6 +50,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
+      - name: Check the PUBLIK_APP_TOKEN secret
+        env:
+          PUBLIK_APP_TOKEN: ${{ secrets.PUBLIK_APP_TOKEN }}
+        run: |
+          if [ -z "$PUBLIK_APP_TOKEN" ]; then
+            echo "::error::The PUBLIK_APP_TOKEN secret is empty. Add it in Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+
       - name: Checkout repository
         uses: actions/checkout@v4.2.2
 
@@ -63,10 +80,39 @@ jobs:
       - name: Run test suite
         run: pnpm test
 
-      - name: Build web bundle (native mode)
+      # vite build refuses what must not ship (app/src/lib/buildCheck.ts), and the
+      # Xcode Release check (app/ios/App/scripts/check-release-build.sh) refuses a test bundle.
+      - name: Build checks refuse what must not ship
+        working-directory: app
+        env:
+          TOKEN: ${{ secrets.PUBLIK_APP_TOKEN }}
+        run: |
+          out="$RUNNER_TEMP/web-check"
+          expect_fail() {
+            if "$@" > "$RUNNER_TEMP/check.log" 2>&1; then
+              echo "::error::This build should have failed: ${*: -5}"
+              exit 1
+            fi
+            grep -a -A3 "Lunara build stopped" "$RUNNER_TEMP/check.log" || true
+          }
+          expect_fail env VITE_PUBLIK_APP_TOKEN=pat_lunara_REPLACE_ME pnpm exec vite build --mode native --outDir "$out"
+          expect_fail env LUNARA_RELEASE=1 VITE_PUBLIK_APP_TOKEN= pnpm exec vite build --mode native --outDir "$out"
+          expect_fail env PUBLIK_API_BASE_URL=http://127.0.0.1:8787 pnpm exec vite build --mode native --outDir "$out"
+          LUNARA_RELEASE=1 VITE_PUBLIK_APP_TOKEN="$TOKEN" pnpm exec vite build --mode native --outDir "$out/App/public" --emptyOutDir > /dev/null
+          echo "Release bundle: $(cat "$out/App/public/lunara-build.json")"
+          CONFIGURATION=Release SRCROOT="$out" sh ios/App/scripts/check-release-build.sh
+          PUBLIK_TEST_HOOKS=1 VITE_PUBLIK_APP_TOKEN="$TOKEN" pnpm exec vite build --mode native --outDir "$out/App/public" --emptyOutDir > /dev/null
+          if CONFIGURATION=Release SRCROOT="$out" sh ios/App/scripts/check-release-build.sh; then
+            echo "::error::The Xcode Release check accepted a test bundle."
+            exit 1
+          fi
+          echo "The Xcode Release check refused the test bundle (as expected)."
+
+      - name: Build web bundle (native mode, test hooks)
         working-directory: app
         env:
           VITE_PUBLIK_APP_TOKEN: ${{ secrets.PUBLIK_APP_TOKEN }}
+          PUBLIK_TEST_HOOKS: "1"
         run: pnpm build:native
 
       - name: Sync web assets into the Android project
@@ -89,9 +135,9 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4.4.1
 
-      - name: Build debug APK
+      - name: Build debug APK (test hooks)
         working-directory: app/android
-        run: ./gradlew assembleDebug --no-daemon
+        run: ./gradlew assembleDebug -PpublikTestHooks=true --no-daemon
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4.6.2
@@ -100,6 +146,37 @@ jobs:
           path: app/android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 30
+
+  android-self-test:
+    name: Android emulator + publik self-test
+    needs: android
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4.2.2
+
+      - name: Download the debug APK
+        uses: actions/download-artifact@v4.1.8
+        with:
+          name: android-debug-apk
+          path: ${{ runner.temp }}/apk
+
+      - name: Enable KVM for the emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: publik self-test in the emulator (the built app calls GET /wallet)
+        uses: reactivecircus/android-emulator-runner@v2.33.0
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot
+          script: bash .github/scripts/android-self-test.sh "${{ runner.temp }}/apk/app-debug.apk"
 
   ios:
     name: iOS simulator app (${{ matrix.gate_mode }}) + publik self-test
@@ -114,6 +191,15 @@ jobs:
           - gate_mode: optional
             artifact: ios-sim-app-optional
     steps:
+      - name: Check the PUBLIK_APP_TOKEN secret
+        env:
+          PUBLIK_APP_TOKEN: ${{ secrets.PUBLIK_APP_TOKEN }}
+        run: |
+          if [ -z "$PUBLIK_APP_TOKEN" ]; then
+            echo "::error::The PUBLIK_APP_TOKEN secret is empty. Add it in Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+
       - name: Checkout repository
         uses: actions/checkout@v4.2.2
 
@@ -138,13 +224,14 @@ jobs:
           VITE_PUBLIK_APP_TOKEN: ${{ secrets.PUBLIK_APP_TOKEN }}
           PUBLIK_GATE_MODE: ${{ matrix.gate_mode }}
           APP_STORE_BUILD: "1"
+          PUBLIK_TEST_HOOKS: "1"
         run: pnpm build:native
 
       - name: Sync web assets into the iOS project
         working-directory: app
         run: npx cap sync ios
 
-      - name: Build unsigned arm64 simulator app
+      - name: Build unsigned arm64 simulator app (test hooks)
         working-directory: app/ios/App
         run: |
           xcodebuild -version
@@ -156,6 +243,7 @@ jobs:
             -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath "$RUNNER_TEMP/dd" \
             ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
+            PUBLIK_TEST_HOOKS=YES \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
             -quiet build
           APP="$RUNNER_TEMP/dd/Build/Products/Debug-iphonesimulator/App.app"

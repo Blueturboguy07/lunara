@@ -72,18 +72,30 @@ public final class LunaraNativePlugin: CAPPlugin, CAPBridgedPlugin {
         "PUBLIK_API_BASE_URL", "PUBLIK_SELF_TEST", "DO_NOT_TRACK", "PUBLIK_TELEMETRY", "PUBLIK_TELEMETRY_DEBUG"
     ]
 
+    /// The fake publik of a test runs on this computer.
+    private static let publikTestHosts: Set<String> = ["127.0.0.1", "localhost", "::1"]
+
     /// A value for the publik module (src/lib/publik.ts): the process environment
     /// (`SIMCTL_CHILD_PUBLIK_SELF_TEST=1 xcrun simctl launch ...`, or the Xcode scheme),
     /// else a launch argument (`-PUBLIK_API_BASE_URL http://127.0.0.1:8787/api/v1`).
-    /// PUBLIK_API_BASE_URL, the test hook, works in a Debug build only.
+    /// The two test hooks, PUBLIK_API_BASE_URL and PUBLIK_SELF_TEST, exist only in a Debug
+    /// build made with PUBLIK_TEST_HOOKS=YES (Lunara.xcconfig; CI passes it to xcodebuild).
+    /// A Release build never compiles them in. PUBLIK_API_BASE_URL must name this computer.
     private func publikLaunchValue(_ name: String) -> String? {
-        #if !DEBUG
-        if name == "PUBLIK_API_BASE_URL" { return nil }
+        #if !PUBLIK_TEST_HOOKS
+        if name == "PUBLIK_API_BASE_URL" || name == "PUBLIK_SELF_TEST" { return nil }
         #endif
         let fromEnvironment = ProcessInfo.processInfo.environment[name]
         let fromArguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)[name].map { "\($0)" }
         guard let value = (fromEnvironment ?? fromArguments)?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
             return nil
+        }
+        if name == "PUBLIK_API_BASE_URL" {
+            guard let url = URL(string: value),
+                  let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
+                  let host = url.host?.lowercased(), Self.publikTestHosts.contains(host) else {
+                return nil
+            }
         }
         return value
     }
@@ -159,7 +171,14 @@ public final class LunaraNativePlugin: CAPPlugin, CAPBridgedPlugin {
             call.reject("A valid key is required.", "INVALID_ARGUMENT")
             return
         }
+        readKeychainItem(key, call: call, retryWhenUnlocked: true)
+    }
 
+    /// Reads one vault item. While the phone is still locked (an app started before the first
+    /// unlock, or prewarmed), the Keychain answers errSecInteractionNotAllowed: the item is
+    /// there, so the read waits until protected data is available and runs once more. If it
+    /// still fails, the answer is KEYCHAIN_LOCKED, which the app never treats as "no key".
+    private func readKeychainItem(_ key: String, call: CAPPluginCall, retryWhenUnlocked: Bool) {
         var query = keychainQuery(key: key)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -180,6 +199,20 @@ public final class LunaraNativePlugin: CAPPlugin, CAPBridgedPlugin {
             call.resolve(["value": NSNull()])
             return
         }
+        if status == errSecInteractionNotAllowed {
+            if retryWhenUnlocked {
+                whenProtectedDataAvailable { [weak self] in
+                    guard let self else {
+                        call.reject("The phone is locked. Unlock it, then try again.", "KEYCHAIN_LOCKED")
+                        return
+                    }
+                    self.readKeychainItem(key, call: call, retryWhenUnlocked: false)
+                }
+            } else {
+                call.reject("The phone is locked. Unlock it, then try again.", "KEYCHAIN_LOCKED")
+            }
+            return
+        }
         guard status == errSecSuccess,
               let data = result as? Data,
               let value = String(data: data, encoding: .utf8) else {
@@ -188,6 +221,26 @@ public final class LunaraNativePlugin: CAPPlugin, CAPBridgedPlugin {
         }
 
         call.resolve(["value": value])
+    }
+
+    /// Runs `work` once protected data is available: at once (after a short wait) when it is
+    /// available already, else when iOS posts protectedDataDidBecomeAvailableNotification.
+    private func whenProtectedDataAvailable(_ work: @escaping () -> Void) {
+        DispatchQueue.main.async {
+            if UIApplication.shared.isProtectedDataAvailable {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
+                return
+            }
+            var observer: NSObjectProtocol?
+            observer = NotificationCenter.default.addObserver(
+                forName: UIApplication.protectedDataDidBecomeAvailableNotification,
+                object: nil,
+                queue: .main
+            ) { _ in
+                if let observer { NotificationCenter.default.removeObserver(observer) }
+                work()
+            }
+        }
     }
 
     @objc public func secureDelete(_ call: CAPPluginCall) {

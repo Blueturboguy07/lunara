@@ -172,6 +172,9 @@ run `pnpm test` before touching any prediction math.
 ## The AI companion is optional, adults-only, and publik API by default
 
 Lunara works fully without AI, and the companion is never offered under 18.
+Lunara knows only the birth year, so the companion opens when the current year
+minus the birth year is 19 or more (an 18-year-old born late in the year waits
+until January 1).
 When it is on, answers come from one of three places:
 
 - **publik API** (default) — no key needed. The app mints its own per-phone
@@ -182,23 +185,31 @@ When it is on, answers come from one of three places:
   balance. Until the phone is linked (or you add your own key), the assistant
   says there is no balance and shows the link. Disconnect at any time from
   Settings.
-- **Anthropic** — your own API key, or a token from `claude setup-token` to
-  bill answers to a Claude subscription.
-- **OpenAI** — your own project API key.
+- **Anthropic** — your own API key, or (not in the iOS app, which is an App
+  Store build) a token from `claude setup-token` to bill answers to a Claude
+  subscription.
+- **OpenAI** — your own project API key. The OpenAI slot refuses an Anthropic
+  key (`sk-ant-…`).
+
+A chat goes to one provider only: when you change the provider or its base URL,
+Lunara AI starts a new chat and sends none of the earlier messages to the new
+provider.
 
 Choosing publik never touches a key you pasted, and choosing your own key never
 revokes the publik one. Credentials are stored in the Keychain / Keystore, never
 in the cycle database and never in a backup. Nothing from your tracker is sent
 unless you tick the specific categories for that message.
 
-**For maintainers — the app token.** `app/src/lib/publikBuild.ts` carries the
-build's public app token. The placeholder `pat_lunara_REPLACE_ME` compiles and
-tests but hides the publik option; the publik-side mint script
-(`scripts/mint-app-token.mts` in the publik repo) mints `pat_lunara_<32 base36>`
-and writes it into that file. A build can set `VITE_PUBLIK_APP_TOKEN` instead;
-the CI test builds use the `PUBLIK_APP_TOKEN` repo secret. The token is public
-by design: it can only mint rate-limited anonymous installs; it holds no
-balance and reads nothing.
+**For maintainers — the app token.** A build takes the app token from
+`VITE_PUBLIK_APP_TOKEN` (`app/.env.native` for a local `native:sync`; the
+`PUBLIK_APP_TOKEN` repo secret in CI, where every workflow fails when the
+secret is empty). `vite build --mode native` fails when the value is not
+`pat_lunara_` and 32 letters and digits. Without the value, a development or
+test build uses `PUBLIK_DEV_APP_TOKEN` in `app/src/lib/publikBuild.ts`: a real,
+minted token, committed as the fallback. A release never uses it: `release.yml`
+fails without the secret, and an Xcode Release archive refuses a bundle built on
+the fallback. The token can only mint rate-limited anonymous installs; it holds
+no balance and reads nothing.
 
 ## Sign in with publik
 
@@ -217,7 +228,12 @@ Build settings (one environment value each at `pnpm build:native` time,
 | Setting | Values | Effect |
 |---|---|---|
 | `PUBLIK_GATE_MODE` | `required` (default), `optional` | `optional`: the tracker opens with no sign-in wall. Lunara asks for Sign in with publik (with "Not now") only when you open Lunara AI or tap Settings → publik → Sign in with publik. Usage counting starts only after sign-in. |
-| `APP_STORE_BUILD` | unset (default), `1` | `1`: no Claude subscription-token (`claude setup-token`) option. Anthropic and OpenAI API keys work in both. |
+| `APP_STORE_BUILD` | unset (default), `1`, `0` | No Claude subscription-token (`claude setup-token`) option. Unset: on in the iOS app, off on Android and the web. `1`: on everywhere. `0`: off everywhere; an Xcode Release archive then fails. Anthropic and OpenAI API keys always work. |
+| `PUBLIK_TEST_HOOKS` | unset (default), `1` | `1`: a test build. The two test hooks below work. A release build (`LUNARA_RELEASE=1`) refuses it. |
+
+An Xcode Release build runs `app/ios/App/scripts/check-release-build.sh`: it
+fails when the web bundle has the test hooks, offers the Claude
+subscription token, or uses the dev app token.
 
 The version and the build number come from `app/package.json` (`version`,
 `buildNumber`). Android reads that file; iOS keeps the same values and the
@@ -227,20 +243,31 @@ fails when they differ.
 - **Offline.** Only the first sign-in needs the network. After that, Lunara
   opens offline: when publik cannot be reached within 5 seconds, the app opens
   with the sign-in it already has. Your cycle data never depended on publik.
-- **Usage counting.** Lunara sends only `app_opened` and `active_session`, with
-  the app version, the phone OS and a random per-app ID. No health data, no
-  cycle data, no notes, ever. Turn it off in Settings → publik → Count my use,
-  or launch with `DO_NOT_TRACK=1` / `PUBLIK_TELEMETRY=0`.
-- **Test hook (debug builds only).** Launch with `PUBLIK_API_BASE_URL` (iOS
-  simulator: `xcrun simctl launch <device> app.lunara.mobile
-  -PUBLIK_API_BASE_URL http://127.0.0.1:8787/api/v1`; Android:
-  `adb shell am start -n app.lunara.mobile/.MainActivity --es
-  PUBLIK_API_BASE_URL http://10.0.2.2:8787/api/v1`) to point the app at a test
-  publik. Release builds ignore it at launch.
-- **Self-test.** Launch with `PUBLIK_SELF_TEST=1` (iOS simulator:
-  `SIMCTL_CHILD_PUBLIK_SELF_TEST=1`; Android: `--es PUBLIK_SELF_TEST 1`). The
-  app prints `publik self-test: ok lunara <version>` after a real wallet check
-  and exits.
+- **Usage counting.** After sign-in, Lunara tries to send only `app_opened` and
+  `active_session`, with the app version, the phone OS and a random per-app ID.
+  No health data, no cycle data, no notes, ever. Sign-out stops it. Turn it off
+  in Settings → publik → Count my use, or launch with `DO_NOT_TRACK=1` /
+  `PUBLIK_TELEMETRY=0`.
+- **Sign-out.** Settings → publik → Sign out (and Disconnect publik API) first
+  deletes the key and the publik settings on this phone and stops usage
+  counting, then asks publik to revoke the key. In `required` mode the sign-in
+  screen comes back at once.
+- **Test hooks (test builds only).** They work only when the web bundle has
+  `PUBLIK_TEST_HOOKS=1` and the native build has it too (Android: `./gradlew
+  assembleDebug -PpublikTestHooks=true`, never a release build; iOS: a Debug
+  build with `xcodebuild ... PUBLIK_TEST_HOOKS=YES`). The CI test builds have
+  them; a release has neither. Android reads them only from a launcher start,
+  never from a link.
+  - `PUBLIK_API_BASE_URL` points the app at a fake publik on this computer
+    (`127.0.0.1`, `localhost`, or `10.0.2.2` from the Android emulator). iOS
+    simulator: `xcrun simctl launch <device> app.lunara.mobile
+    -PUBLIK_API_BASE_URL http://127.0.0.1:8787/api/v1`; Android: `adb shell am
+    start -a android.intent.action.MAIN -n app.lunara.mobile/.MainActivity --es
+    PUBLIK_API_BASE_URL http://10.0.2.2:8787/api/v1`.
+  - `PUBLIK_SELF_TEST=1` (iOS simulator: `SIMCTL_CHILD_PUBLIK_SELF_TEST=1`;
+    Android: `--es PUBLIK_SELF_TEST 1`). The app prints `publik self-test: ok
+    lunara <version>` after a real wallet check and exits. CI runs it in the iOS
+    simulator and in an Android emulator.
 - **Delete account.** Settings → Danger zone → Delete account says what is
   deleted (the publik account, for all publik apps), deletes Lunara's publik
   data on this phone, asks separately before it deletes cycle data, then opens

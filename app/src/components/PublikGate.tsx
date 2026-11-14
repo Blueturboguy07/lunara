@@ -4,7 +4,9 @@ import { gateMode } from '../lib/buildFlags'
 import {
   applyChoiceToAi,
   ensureSignedIn,
+  gateScreen,
   needsSignInOnDemand,
+  onPublikSignOut,
   openWithoutWall,
   signInOnDemand,
   type GateAction,
@@ -23,7 +25,8 @@ import { LunaraMark } from './LunaraMark'
  * PUBLIK_GATE_MODE (lib/buildFlags.ts):
  *   required (default)  <PublikGate> is a wall before onboarding, the PIN lock and the tabs.
  *                       After onboarding (the age is known), askPlanAfterOnboarding() shows
- *                       the plan screen to an adult.
+ *                       the plan screen to an adult. Every sign-out (Settings, Lunara AI,
+ *                       Delete account) shows the wall again at once.
  *   optional            <PublikGate> shows nothing at start. <RequirePublik> around Lunara AI
  *                       and the Settings sign-in row asks for sign-in, with "Not now".
  */
@@ -68,8 +71,37 @@ async function settle<T extends GateResult | null>(result: T): Promise<T> {
 let wall: Promise<GateResult> | null = null
 let onDemand: Promise<GateResult | null> | null = null
 
-function startWall(): Promise<GateResult> {
-  return (wall ??= ensureSignedIn(ui).then(settle))
+/** Required mode: the wall, one at a time. A failure forgets the promise, so the next call starts again. */
+export function startWall(): Promise<GateResult> {
+  return (wall ??= ensureSignedIn(ui)
+    .then(settle)
+    .catch((error: unknown) => {
+      wall = null
+      throw error
+    }))
+}
+
+type ShowScreen = (screen: GateScreen) => Promise<GateAction>
+const showOnWall: ShowScreen = (screen) => ui.show(screen, new AbortController().signal)
+
+/**
+ * The wall until the person is through. It never freezes: when the gate fails
+ * in an unexpected way, "publik is not reachable" shows with Retry, and Retry
+ * starts the gate again.
+ */
+export async function passWall(show: ShowScreen = showOnWall): Promise<GateResult> {
+  for (;;) {
+    try {
+      return await startWall()
+    } catch (error) {
+      await show(gateScreen('unreachable', null, null, error instanceof Error && error.message ? error.message : undefined))
+    }
+  }
+}
+
+/** Required mode, after a sign-out: forget the passed wall, so the next passWall() asks again. */
+export function forgetWall(): void {
+  wall = null
 }
 
 /** Optional mode: the gate on demand, one at a time. Resolves null after "Not now". */
@@ -89,7 +121,7 @@ export function signInWithPublik(): Promise<GateResult | null> {
 export function askPlanAfterOnboarding(): void {
   if (gateMode() !== 'required') return
   wall = null
-  void startWall()
+  void passWall()
 }
 
 function useGateScreen(): [GateScreen | null, boolean, (action: GateAction) => void] {
@@ -147,7 +179,8 @@ function GateCard({ screen, busy, press, overlay }: { screen: GateScreen; busy: 
           </div>
           {screen.id === 'sign_in' && (
             <p className="microcopy publik-gate-note">
-              publik counts when this app opens. You can turn this off in Settings.
+              After you sign in, Lunara tells publik when the app opens. It sends no health data. You can turn
+              this off in Settings.
             </p>
           )}
         </section>
@@ -166,19 +199,32 @@ export function PublikGate({ children }: { children: ReactNode }) {
   const required = gateMode() === 'required'
   const [screen, busy, press] = useGateScreen()
   const [passed, setPassed] = useState(!required)
+  // A new round after each sign-out: the wall runs again.
+  const [round, setRound] = useState(0)
 
   useEffect(() => {
     let alive = true
     if (required) {
-      void startWall().then(() => {
+      void passWall().then(() => {
         if (alive) setPassed(true)
       })
     } else {
-      void openWithoutWall()
+      void openWithoutWall().catch(() => undefined)
     }
     return () => {
       alive = false
     }
+  }, [required, round])
+
+  useEffect(() => {
+    if (!required) return
+    // Required mode: every sign-out path returns to the wall at once (lib/publik.ts announces it).
+    return onPublikSignOut(() => {
+      forgetWall()
+      draw(null)
+      setPassed(false)
+      setRound((n) => n + 1)
+    })
   }, [required])
 
   if (passed)
@@ -202,7 +248,12 @@ export function RequirePublik({ children, onCancel }: { children: ReactNode; onC
     if (ready) return
     let alive = true
     void (async () => {
-      const result = (await needsSignInOnDemand()) ? await signInWithPublik() : true
+      let result: GateResult | true | null = null
+      try {
+        result = (await needsSignInOnDemand()) ? await signInWithPublik() : true
+      } catch {
+        result = null // an unexpected failure closes Lunara AI instead of leaving an empty screen
+      }
       if (!alive) return
       if (result) setReady(true)
       else onCancel()

@@ -31,9 +31,12 @@
  * before), and signInOnDemand(ui) when the person opens Lunara AI or the publik row in
  * Settings. That screen has a "Not now" button; usage counting starts only after sign-in.
  *
- * Test hook: PUBLIK_API_BASE_URL (a launch argument of a debug build, or the
- * build environment) points every call at another publik, for example a fake
- * server in a blind test. Nothing else changes the gate.
+ * Test hooks, in a test build only (PUBLIK_TEST_HOOKS=1 in the web bundle AND in the
+ * native build; lib/buildFlags.ts) or `pnpm dev`: PUBLIK_API_BASE_URL (a launch
+ * argument, or the build environment) points every call at a fake publik on this
+ * computer (127.0.0.1, localhost, or 10.0.2.2 from the Android emulator), and
+ * PUBLIK_SELF_TEST prints the self-test line. A release build has neither.
+ * Nothing else changes the gate.
  *
  * The stateful half of publik API for Lunara AI is here too: provisionPublik
  * (the same mint, offered to adults on a native build), fetchPublikWallet (the
@@ -51,6 +54,8 @@ import {
   secureVaultStatus,
   setSecureSecret,
 } from '../native/secureVault'
+import { testHooksOn } from './buildFlags'
+import { forgetHealthSharing } from './healthConsent'
 import { providerFetch } from './providerFetch'
 import {
   DEFAULT_PUBLIK_ENDPOINT,
@@ -84,6 +89,8 @@ const WALLET_TIMEOUT_MS = 15_000
 /** A phone that signed in before waits this long for publik, then opens offline. */
 const OFFLINE_WAIT_MS = 5_000
 const TELEMETRY_TIMEOUT_MS = 5_000
+/** Sign-out tells publik with this limit; the phone has already forgotten the key. */
+const REVOKE_TIMEOUT_MS = 10_000
 /** 30 minutes. */
 const TELEMETRY_EVERY_MS = 1_800 * 1000
 
@@ -144,12 +151,16 @@ interface PublikNativeLaunch {
 }
 const nativeLaunch = getLunaraNativeBridge<PublikNativeLaunch>()
 
-/** PUBLIK_API_BASE_URL as an origin: http(s) only, with a trailing /api/v1 removed. */
+/** The fake publik of a test runs on this computer: these hosts only (10.0.2.2 is the computer, seen from the Android emulator). */
+const TEST_HOSTS = new Set(['127.0.0.1', 'localhost', '10.0.2.2', '[::1]'])
+
+/** PUBLIK_API_BASE_URL as an origin: http(s) on a TEST_HOSTS host only, with a trailing /api/v1 removed. */
 function testOrigin(raw: string | null): string | null {
   if (!raw) return null
   try {
     const url = new URL(raw)
     if (url.protocol !== 'https:' && url.protocol !== 'http:') return null
+    if (!TEST_HOSTS.has(url.hostname)) return null
     return `${url.origin}${url.pathname.replace(/\/+$/, '').replace(/\/api\/v1$/, '')}`
   } catch {
     return null
@@ -163,10 +174,12 @@ function launchFrom(values: Record<string, string | undefined>): LaunchOptions {
   }
   const dnt = (get('DO_NOT_TRACK') ?? '').toLowerCase()
   const usage = (get('PUBLIK_TELEMETRY') ?? '').toLowerCase()
+  // The two test hooks work only in a test build or `pnpm dev` (lib/buildFlags.ts).
+  const hooks = testHooksOn()
   return {
     // A native launch argument wins; else the build environment (vite.config.ts exposes PUBLIK_API_BASE_URL).
-    baseUrl: testOrigin(get('PUBLIK_API_BASE_URL') ?? (import.meta.env.PUBLIK_API_BASE_URL as string | undefined)?.trim() ?? null),
-    selfTest: get('PUBLIK_SELF_TEST') !== null,
+    baseUrl: hooks ? testOrigin(get('PUBLIK_API_BASE_URL') ?? (import.meta.env.PUBLIK_API_BASE_URL as string | undefined)?.trim() ?? null) : null,
+    selfTest: hooks && get('PUBLIK_SELF_TEST') !== null,
     usageOff: (dnt !== '' && dnt !== '0' && dnt !== 'false') || ['0', 'false', 'off'].includes(usage),
     debug: get('PUBLIK_TELEMETRY_DEBUG') === '1',
   }
@@ -179,8 +192,10 @@ let launchLoaded: Promise<LaunchOptions> | null = null
  * The launch options, read once from the native shell: the process environment
  * or a launch argument on iOS (`SIMCTL_CHILD_PUBLIK_SELF_TEST=1 xcrun simctl launch …`,
  * `-PUBLIK_API_BASE_URL <url>`), an intent extra on Android
- * (`adb shell am start … --es PUBLIK_API_BASE_URL <url>`). The native side
- * honours PUBLIK_API_BASE_URL in a debug build only.
+ * (`adb shell am start -a android.intent.action.MAIN … --es PUBLIK_API_BASE_URL <url>`).
+ * The native side gives PUBLIK_API_BASE_URL and PUBLIK_SELF_TEST only in a build
+ * made with PUBLIK_TEST_HOOKS (Android: BuildConfig, never a release build and
+ * never from a link; iOS: a Debug build with the PUBLIK_TEST_HOOKS Swift flag).
  */
 export function loadLaunchOptions(): Promise<LaunchOptions> {
   return (launchLoaded ??= (async () => {
@@ -271,7 +286,17 @@ function deviceOs(): string {
 
 const WEB_KEY_ITEM = `publik:${APP_SLUG}:key`
 
-/** The pk_ key: the native vault on a phone; localStorage in a browser build (the web vault forgets on reload). */
+/** The iOS vault answers KEYCHAIN_LOCKED while the phone is still locked: the key is there, so never delete it. */
+function vaultLocked(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 'KEYCHAIN_LOCKED'
+}
+
+/**
+ * The pk_ key: the native vault on a phone; localStorage in a browser build (the web vault forgets on reload).
+ * A vault item that cannot be read ("Secret could not be decrypted": Android after a restore or a device
+ * transfer, where the Keystore key did not come along) is deleted and counts as no key, so the gate sets up
+ * a new install and the person signs in again. It never locks the person out.
+ */
 async function readKey(): Promise<string | null> {
   if (!isNative) {
     try {
@@ -281,7 +306,13 @@ async function readKey(): Promise<string | null> {
       // storage blocked: fall back to this tab's memory
     }
   }
-  return getSecureSecret(SECURE_SECRET_KEYS.publikApiKey)
+  try {
+    return await getSecureSecret(SECURE_SECRET_KEYS.publikApiKey)
+  } catch (error) {
+    if (vaultLocked(error)) throw error
+    await deleteSecureSecret(SECURE_SECRET_KEYS.publikApiKey).catch(() => undefined)
+    return null
+  }
 }
 
 async function writeKey(key: string): Promise<void> {
@@ -331,8 +362,9 @@ export async function setChoice(choice: Choice | null): Promise<void> {
   else await removeSetting(SK.publikChoice)
 }
 
-/** A revoked key (401): forget the install, so the next pass provisions a new one. */
+/** A revoked key (401): stop counting and forget the install, so the next pass provisions a new one. */
 async function forgetInstall(): Promise<void> {
+  stopTelemetry()
   await deleteKey()
   await Promise.all([SK.publikInstallId, SK.publikClaimUrl, SK.publikClaimState, SK.publikChoice].map((key) => removeSetting(key)))
 }
@@ -672,50 +704,98 @@ export async function fetchPublikWallet(fetchImpl: FetchLike = providerFetch): P
   }
 }
 
+// ---------- signing out ----------
+
+const signOutListeners = new Set<() => void>()
+
+/** PublikGate listens: in required mode a sign-out shows the wall again at once. Returns the unsubscribe. */
+export function onPublikSignOut(listener: () => void): () => void {
+  signOutListeners.add(listener)
+  return () => {
+    signOutListeners.delete(listener)
+  }
+}
+
+/** Every publik value Lunara keeps in its settings (the telemetry ID and "Count my use" are separate). */
+function publikSettingKeys(): string[] {
+  return [
+    SK.publikInstallId,
+    SK.publikClaimUrl,
+    SK.publikClaimState,
+    SK.publikBaseUrl,
+    SK.publikModels,
+    SK.publikStarterMicros,
+    SK.publikCostSentence,
+    SK.publikCardSeen,
+    SK.publikChoice,
+  ]
+}
+
+interface SignOutOptions {
+  /** false: do not show the gate now, because the caller restarts the app itself (Delete all data). Default true. */
+  returnToGate?: boolean
+}
+
 /**
- * "Disconnect publik API": POST /installs/revoke (best effort), then forget
- * everything local. This signs the phone out of publik: the next start shows
- * Sign in with publik again. "Delete all data" calls it too.
+ * Sign-out, in this order, so that a crash or a slow network never leaves a signed-in phone:
+ *   1. read the key into memory;
+ *   2. stop usage counting; delete the vault item, every publik setting and the publik
+ *      permission for health data (and, for Delete account, the telemetry ID);
+ *   3. POST /installs/revoke with the key from memory, best effort (offline: publik's idle
+ *      sweep revokes it later);
+ *   4. tell PublikGate: in required mode the wall comes back at once.
+ * Throws after step 4 when step 2 could not delete something.
  */
-export async function disconnectPublik(fetchImpl: FetchLike = providerFetch): Promise<void> {
-  const key = await readKey()
+async function signOutHere(fetchImpl: FetchLike, options: SignOutOptions & { forgetTelemetryId: boolean }): Promise<void> {
+  const key = await readKey().catch(() => null)
+  const endpoint = await publikEndpoint().catch(() => DEFAULT_PUBLIK_ENDPOINT)
+  stopTelemetry()
+  const local = await Promise.allSettled([
+    deleteKey(),
+    ...publikSettingKeys().map((name) => removeSetting(name)),
+    forgetHealthSharing('publik'),
+    options.forgetTelemetryId ? removeSetting(SK.publikTelemetryId) : Promise.resolve(),
+  ])
   if (key) {
-    const endpoint = await publikEndpoint()
     try {
-      await withTimeout(fetchImpl(`${endpoint.baseUrl}/installs/revoke`, { method: 'POST', headers: { authorization: `Bearer ${key}` } }), INSTALL_TIMEOUT_MS)
+      await withTimeout(fetchImpl(`${endpoint.baseUrl}/installs/revoke`, { method: 'POST', headers: { authorization: `Bearer ${key}` } }), REVOKE_TIMEOUT_MS)
     } catch {
       // offline: the idle sweep revokes it server-side
     }
   }
-  await deleteKey()
-  await Promise.all(
-    [
-      SK.publikInstallId,
-      SK.publikClaimUrl,
-      SK.publikClaimState,
-      SK.publikBaseUrl,
-      SK.publikModels,
-      SK.publikStarterMicros,
-      SK.publikCostSentence,
-      SK.publikCardSeen,
-      SK.publikChoice,
-    ].map((key) => removeSetting(key)),
-  )
+  if (options.returnToGate !== false) {
+    for (const listener of [...signOutListeners]) {
+      try {
+        listener()
+      } catch {
+        // a listener never stops the sign-out
+      }
+    }
+  }
+  const failed = local.find((result): result is PromiseRejectedResult => result.status === 'rejected')
+  if (failed) throw failed.reason
+}
+
+/**
+ * "Sign out" and "Disconnect publik API": the phone forgets publik, then tells publik
+ * (signOutHere). The next screen is Sign in with publik (required mode: at once).
+ */
+export function disconnectPublik(fetchImpl: FetchLike = providerFetch, options: SignOutOptions = {}): Promise<void> {
+  return signOutHere(fetchImpl, { ...options, forgetTelemetryId: false })
 }
 
 // ---------- the gate ----------
 
-const dollars = (micros: number) => `$${(micros / 1_000_000).toFixed(2)}`
 /** The words of the gate. The same in every publik module. */
 export function gateScreen(id: GateScreen['id'], w: Wallet | null, note: string | null = null, message?: string): GateScreen {
   if (id === 'unreachable') return { id, title: 'Sign in with publik', body: message ?? 'publik is not reachable. Check your connection.', note, buttons: [{ action: 'retry', label: 'Retry' }] }
   if (id === 'sign_in') return { id, title: 'Sign in with publik', note, buttons: [{ action: 'sign_in', label: 'Sign in with publik' }],
     body: 'This app uses your publik account. Click Sign in with publik, then sign in in your browser. This window continues when you are signed in.' }
-  const who = w?.account?.handle ? `You are signed in as @${w.account.handle}.` : 'You are signed in to publik.'
+  // No handle and no balance: the plan screen can show before the PIN lock.
   if (!w || (w.plan.kind === 'none' && w.balance_micros === 0)) return { id, title: 'Choose how to pay for AI', note,
-    body: `${who} This app uses AI. Get a publik plan, or use your own key.`, buttons: [{ action: 'get_plan', label: 'Get a plan' }, { action: 'own_key', label: 'Use my own key' }] }
-  const what = w.plan.kind === 'plan' ? `Your plan: ${w.plan.label ?? 'publik'}.` : `Your balance: ${dollars(w.balance_micros)}.`
-  return { id, title: 'Connect your plan', note, body: `${who} ${what} Connect it to use AI in this app, or use your own key.`,
+    body: 'You are signed in to publik. This app uses AI. Get a publik plan, or use your own key.', buttons: [{ action: 'get_plan', label: 'Get a plan' }, { action: 'own_key', label: 'Use my own key' }] }
+  const what = w.plan.kind === 'plan' ? 'You have a publik plan.' : 'You have publik credit.'
+  return { id, title: 'Connect your plan', note, body: `You are signed in to publik. ${what} Connect it to use AI in this app, or use your own key.`,
     buttons: [{ action: 'connect', label: 'Connect your plan' }, { action: 'own_key', label: 'Use my own key' }] }
 }
 
@@ -861,90 +941,97 @@ export function accountDeletionUrl(): string {
 }
 
 /**
- * Settings > Delete account, step 2: sign this phone out of publik (POST
- * /installs/revoke, best effort) and delete every publik value Lunara keeps
- * here, the usage-counting ID too. "Count my use: Off" stays off. Cycle data
- * is not touched; Settings offers that as a separate step.
+ * Settings > Delete account: sign this phone out of publik (signOutHere: the phone
+ * forgets first, then POST /installs/revoke, best effort) and delete every publik
+ * value Lunara keeps here, the usage-counting ID too. "Count my use: Off" stays
+ * off. Cycle data is not touched; Settings asks about it separately.
  */
-export async function deletePublikDataOnThisPhone(fetchImpl: FetchLike = providerFetch): Promise<void> {
-  await disconnectPublik(fetchImpl)
-  await removeSetting(SK.publikTelemetryId)
-  if (timer) clearInterval(timer)
-  timer = null
+export function deletePublikDataOnThisPhone(fetchImpl: FetchLike = providerFetch, options: SignOutOptions = {}): Promise<void> {
+  return signOutHere(fetchImpl, { ...options, forgetTelemetryId: true })
+}
+
+/** The words of an unexpected error on the "not reachable" screen. */
+function errorText(error: unknown): string | undefined {
+  return error instanceof Error && error.message.trim() ? error.message.trim() : undefined
 }
 
 async function gateLoop(ui: GateUI, notNow: boolean): Promise<GateResult | null> {
-  await selfTestIfAsked()
+  await selfTestIfAsked().catch(() => undefined)
   watchForeground()
   // "Not now" on every screen of an on-demand sign-in (optional mode); never on the wall.
   const offer = (screen: GateScreen): GateScreen => (notNow ? { ...screen, buttons: [...screen.buttons, { action: 'not_now', label: 'Not now' }] } : screen)
   let signNote: string | null = null, signPoll = true, planNote: string | null = null, planPoll = false, chosenNow = false
   let revokedInARow = 0
   for (;;) {
-    let c: PublikCredential | null = null
-    let r: Awaited<ReturnType<typeof readWallet>>
-    let signedInBefore = false
+    // Never freeze: any unexpected error (the vault, the database, a screen) shows "not reachable" with Retry.
     try {
-      signedInBefore = (await getSetting(SK.publikClaimState)) === 'claimed'
-      c = (await readCredential()) ?? (await provisionCredential())
-      r = await readWallet(c.key, signedInBefore ? OFFLINE_WAIT_MS : WALLET_TIMEOUT_MS)
+      let c: PublikCredential | null = null
+      let r: Awaited<ReturnType<typeof readWallet>>
+      let signedInBefore = false
+      try {
+        signedInBefore = (await getSetting(SK.publikClaimState)) === 'claimed'
+        c = (await readCredential()) ?? (await provisionCredential())
+        r = await readWallet(c.key, signedInBefore ? OFFLINE_WAIT_MS : WALLET_TIMEOUT_MS)
+      } catch (e) {
+        const offline = e instanceof PublikApiError && e.kind === 'unreachable'
+        // Offline after the first sign-in: Lunara opens on this phone's last answer from publik.
+        if (offline && c && signedInBefore) {
+          startTelemetry()
+          return { key: c.key, wallet: offlineWallet(), choice: c.choice, chosenNow: false, offline: true }
+        }
+        if ((await ask(ui, offer(gateScreen('unreachable', null, null, offline ? undefined : e instanceof Error ? e.message : String(e))))) === 'not_now') return null
+        continue
+      }
+      if (r.status === 401) {
+        // A revoked key: provision again. A new key that is refused at once too: wait for Retry, never loop on publik.
+        if (++revokedInARow >= 2 && (await ask(ui, offer(gateScreen('unreachable', null, null, r.message ?? undefined)))) === 'not_now') return null
+        await forgetInstall()
+        continue
+      }
+      revokedInARow = 0
+      const w = r.wallet
+      if (!w) {
+        // publik is up but failing (5xx, 429): a phone that signed in before still opens.
+        if ((r.status >= 500 || r.status === 429) && signedInBefore) {
+          startTelemetry()
+          return { key: c.key, wallet: offlineWallet(), choice: c.choice, chosenNow: false, offline: true }
+        }
+        if ((await ask(ui, offer(gateScreen('unreachable', null, null, r.message ?? undefined)))) === 'not_now') return null
+        continue
+      }
+      if (w.claim_state !== 'claimed') {
+        const a = await ask(ui, offer(gateScreen('sign_in', w, signNote)), c.key, signPoll ? (x) => x.claim_state === 'claimed' : undefined)
+        if (a === 'not_now') return null
+        if (a === 'sign_in') { ui.openUrl(w.claim_url ?? c.claim_url ?? `${origin()}/wallet`); signNote = 'Waiting for you to sign in in your browser.'; signPoll = true }
+        if (a === 'timeout') { signNote = 'No sign-in after 10 minutes. Click Sign in with publik to try again.'; signPoll = false }
+        if (a === 'done') closeBrowser()
+        continue
+      }
+      // The plan screen: Lunara AI runs on a phone, for a known adult; a browser build, a known minor and an unknown age skip it.
+      const asksAi = gateAsksPlanHere() && (await knownAdult())
+      let choice: Choice | null = asksAi ? c.choice : null
+      if (asksAi && !choice) {
+        if (w.plan.kind !== 'none' || w.balance_micros > 0) { planNote = null; planPoll = false } // the plan is there: Connect your plan
+        const a = await ask(ui, offer(gateScreen('choose', w, planNote)), c.key, planPoll ? (x) => x.plan.kind !== 'none' || x.balance_micros > 0 : undefined)
+        planNote = null; planPoll = false
+        if (a === 'not_now') {
+          // Signed in, no answer yet: Lunara asks again the next time.
+          startTelemetry()
+          return { key: c.key, wallet: w, choice: null, chosenNow: false, offline: false }
+        }
+        if (a === 'get_plan') { ui.openUrl(w.top_up_url); planNote = 'Waiting for your plan. Finish in your browser.'; planPoll = true }
+        if (a === 'timeout') planNote = 'No plan after 10 minutes. Click Get a plan to try again.'
+        if (a === 'done') closeBrowser()
+        if (a !== 'connect' && a !== 'own_key') continue // "done": the plan is there; the next screen is Connect your plan
+        choice = a === 'connect' ? 'publik' : 'own_key'
+        await setChoice(choice)
+        chosenNow = true
+      }
+      startTelemetry()
+      return { key: c.key, wallet: w, choice, chosenNow, offline: false }
     } catch (e) {
-      const offline = e instanceof PublikApiError && e.kind === 'unreachable'
-      // Offline after the first sign-in: Lunara opens on this phone's last answer from publik.
-      if (offline && c && signedInBefore) {
-        startTelemetry()
-        return { key: c.key, wallet: offlineWallet(), choice: c.choice, chosenNow: false, offline: true }
-      }
-      if ((await ask(ui, offer(gateScreen('unreachable', null, null, offline ? undefined : e instanceof Error ? e.message : String(e))))) === 'not_now') return null
-      continue
+      if ((await ask(ui, offer(gateScreen('unreachable', null, null, errorText(e))))) === 'not_now') return null
     }
-    if (r.status === 401) {
-      // A revoked key: provision again. A new key that is refused at once too: wait for Retry, never loop on publik.
-      if (++revokedInARow >= 2 && (await ask(ui, offer(gateScreen('unreachable', null, null, r.message ?? undefined)))) === 'not_now') return null
-      await forgetInstall()
-      continue
-    }
-    revokedInARow = 0
-    const w = r.wallet
-    if (!w) {
-      // publik is up but failing (5xx, 429): a phone that signed in before still opens.
-      if ((r.status >= 500 || r.status === 429) && signedInBefore) {
-        startTelemetry()
-        return { key: c.key, wallet: offlineWallet(), choice: c.choice, chosenNow: false, offline: true }
-      }
-      if ((await ask(ui, offer(gateScreen('unreachable', null, null, r.message ?? undefined)))) === 'not_now') return null
-      continue
-    }
-    if (w.claim_state !== 'claimed') {
-      const a = await ask(ui, offer(gateScreen('sign_in', w, signNote)), c.key, signPoll ? (x) => x.claim_state === 'claimed' : undefined)
-      if (a === 'not_now') return null
-      if (a === 'sign_in') { ui.openUrl(w.claim_url ?? c.claim_url ?? `${origin()}/wallet`); signNote = 'Waiting for you to sign in in your browser.'; signPoll = true }
-      if (a === 'timeout') { signNote = 'No sign-in after 10 minutes. Click Sign in with publik to try again.'; signPoll = false }
-      if (a === 'done') closeBrowser()
-      continue
-    }
-    // The plan screen: Lunara AI runs on a phone, for a known adult; a browser build, a known minor and an unknown age skip it.
-    const asksAi = gateAsksPlanHere() && (await knownAdult())
-    let choice: Choice | null = asksAi ? c.choice : null
-    if (asksAi && !choice) {
-      if (w.plan.kind !== 'none' || w.balance_micros > 0) { planNote = null; planPoll = false } // the plan is there: Connect your plan
-      const a = await ask(ui, offer(gateScreen('choose', w, planNote)), c.key, planPoll ? (x) => x.plan.kind !== 'none' || x.balance_micros > 0 : undefined)
-      planNote = null; planPoll = false
-      if (a === 'not_now') {
-        // Signed in, no answer yet: Lunara asks again the next time.
-        startTelemetry()
-        return { key: c.key, wallet: w, choice: null, chosenNow: false, offline: false }
-      }
-      if (a === 'get_plan') { ui.openUrl(w.top_up_url); planNote = 'Waiting for your plan. Finish in your browser.'; planPoll = true }
-      if (a === 'timeout') planNote = 'No plan after 10 minutes. Click Get a plan to try again.'
-      if (a === 'done') closeBrowser()
-      if (a !== 'connect' && a !== 'own_key') continue // "done": the plan is there; the next screen is Connect your plan
-      choice = a === 'connect' ? 'publik' : 'own_key'
-      await setChoice(choice)
-      chosenNow = true
-    }
-    startTelemetry()
-    return { key: c.key, wallet: w, choice, chosenNow, offline: false }
   }
 }
 
@@ -969,6 +1056,8 @@ export async function selfTest(): Promise<string> {
 
 let timer: ReturnType<typeof setInterval> | null = null
 let lastSentAt = 0
+/** Changes at every stop: an event already on its way when counting stops is not sent. */
+let telemetryRun = 0
 
 /** Usage counting is on unless the person turned it off in Settings, or the launch says DO_NOT_TRACK / PUBLIK_TELEMETRY=0. */
 export async function usageCountingOn(): Promise<boolean> {
@@ -995,10 +1084,12 @@ async function sendEvent(event: 'app_opened' | 'active_session'): Promise<void> 
   const say = (result: unknown) => {
     if (launch.debug) console.info(`publik-telemetry: ${event} -> ${result}`)
   }
+  const run = telemetryRun
   try {
     if (!(await usageCountingOn())) return say('off (opt-out)')
-    lastSentAt = Date.now()
     const key = await readKey()
+    if (run !== telemetryRun) return say('stopped (signed out)')
+    lastSentAt = Date.now()
     const body = { v: 1, app: APP_SLUG, install_id: await telemetryInstallId(), event, app_version: APP_VERSION.replace(/^v/i, ''), os: deviceOs() }
     const res = await withTimeout(
       providerFetch(`${origin()}/api/v1/telemetry`, {
@@ -1026,6 +1117,13 @@ export function startTelemetry(): void {
   void sendEvent('app_opened')
 }
 
+/** Sign-out, a revoked key and Delete account stop usage counting until the next sign-in. */
+export function stopTelemetry(): void {
+  if (timer) clearInterval(timer)
+  timer = null
+  telemetryRun++
+}
+
 /** A phone pauses timers in the background: coming back after 30 minutes or more counts as an active session at once. */
 function resumeTelemetry(): void {
   if (!timer || Date.now() - lastSentAt < TELEMETRY_EVERY_MS) return
@@ -1035,9 +1133,9 @@ function resumeTelemetry(): void {
 
 /** Tests only: forget the launch options, the timer and the foreground state between cases. */
 export function _resetPublikForTests(): void {
-  if (timer) clearInterval(timer)
-  timer = null
+  stopTelemetry()
   lastSentAt = 0
+  signOutListeners.clear()
   launch = launchFrom({})
   launchLoaded = null
   foreground = true

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 12 and later. The vault file (lunara.secure.v1.xml: the publik key and
+  the person's own AI keys, encrypted with an Android Keystore key) never leaves
+  this phone. The Keystore key cannot be copied, so a copied vault file could
+  never be decrypted on the new phone. allowBackup="false" already stops the
+  cloud backup; these rules also cover the transfer to a new phone.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="lunara.secure.v1.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="lunara.secure.v1.xml" />
+    </device-transfer>
+</data-extraction-rules>

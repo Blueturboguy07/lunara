@@ -22,6 +22,7 @@ import {
   claudeSubscriptionTokensAllowed,
   DEFAULT_ANTHROPIC_MODEL,
   DEFAULT_OPENAI_MODEL,
+  openAiKeyProblem,
   type AssistantProvider,
 } from '../lib/assistant'
 import { localToday } from '../lib/dates'
@@ -29,6 +30,7 @@ import {
   DEFAULT_PUBLIK_MODEL,
   dollars,
   gateAsksPlanHere,
+  isAdultBirthYear,
   markPublikCardSeen,
   provisionPublik,
   PUBLIK_BUILD,
@@ -485,7 +487,8 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
     birth >= thisYear - 100 &&
     birth <= thisYear - 13
 
-  const adult = age !== null && age >= 18
+  // Adults only, by birth year alone: 19 or more years since the birth year (lib/publikApi.ts).
+  const adult = isAdultBirthYear(draft.birthYear)
   useEffect(() => {
     // publikAvailable() also checks SK.birthYear, which is not saved until finish();
     // the step itself is gated on the typed year, so only the build/vault checks matter here.
@@ -525,10 +528,10 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
     ) next.push('sleep')
     next.push('summary')
     // On a phone the publik gate asks how to pay for AI after onboarding (lib/publik.ts), so this step is for browser builds.
-    if ((age ?? 0) >= 18 && !gateAsksPlanHere()) next.push('ai')
+    if (adult && !gateAsksPlanHere()) next.push('ai')
     next.push('finish')
     return next
-  }, [age, draft.goal, draft.sleepImpact, draft.trackingAreas, hormonalMethod])
+  }, [adult, draft.goal, draft.sleepImpact, draft.trackingAreas, hormonalMethod])
 
   const progressSteps: StepId[] = steps.filter((step) => step !== 'welcome' && step !== 'finish')
   const progressIndex = Math.max(1, progressSteps.indexOf(current) + 1)
@@ -676,6 +679,9 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
     setSaving(true)
     setSaveError(null)
     try {
+      // The OpenAI slot never takes an Anthropic credential (it would go to OpenAI or a custom service).
+      const keyProblem = steps.includes('ai') && provider === 'openai' && apiKey.trim() ? openAiKeyProblem(apiKey) : null
+      if (keyProblem) throw new Error(keyProblem)
       const defaults = createDefaultHealthProfile()
       const pregnancyDating =
         draft.goal === 'pregnancy' && draft.pregnancyDatingDate
@@ -753,7 +759,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
           ageBand:
             age === null
               ? 'unknown'
-              : age >= 18
+              : adult
                 ? 'adult'
                 : age >= 16
                   ? '16-17'
@@ -771,8 +777,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
             {
               purpose: 'assistant-sharing',
               state:
-                age !== null &&
-                age >= 18 &&
+                adult &&
                 (provider === 'publik' ? publikInstall !== null : apiKey.trim().length > 0)
                   ? 'granted'
                   : 'not-requested',
@@ -782,7 +787,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
             {
               purpose: 'publik-api',
               state:
-                age !== null && age >= 18 && provider === 'publik' && publikInstall !== null
+                adult && provider === 'publik' && publikInstall !== null
                   ? 'granted'
                   : 'not-requested',
               version: 1,
@@ -973,7 +978,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
             <div><strong>AI and health imports</strong><p>They remain separate and require an explicit setup or operating-system permission later.</p></div>
           </article>
         </div>
-        {age !== null && age < 18 && (
+        {age !== null && !adult && (
           <div className="ob-safety-note">
             <strong>Age-aware setup</strong>
             <p>Optional AI setup is hidden for this profile. Regional or guardian requirements may also apply before distribution.</p>

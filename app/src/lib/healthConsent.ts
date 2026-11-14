@@ -78,3 +78,11 @@ export async function allowHealthSharing(destination: HealthDestination, kinds: 
   all[destination.id] = (Object.keys(HEALTH_KIND_LABELS) as HealthKind[]).filter((kind) => merged.has(kind))
   await setSetting(SK.aiHealthConsent, JSON.stringify(all))
 }
+
+/** Sign-out and Delete account: the permission for this destination ends with the account ("publik"). */
+export async function forgetHealthSharing(destinationId: string): Promise<void> {
+  const all = await readAllowed()
+  if (!(destinationId in all)) return
+  delete all[destinationId]
+  await setSetting(SK.aiHealthConsent, JSON.stringify(all))
+}

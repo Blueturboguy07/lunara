@@ -19,40 +19,53 @@ vi.mock('../native/runtime', () => ({
   },
 }))
 
-const vault = vi.hoisted(() => ({ store: new Map<string, string>() }))
+// readError: reading the item that holds `value` fails like the native vault does (an Error with a code).
+const vault = vi.hoisted(() => ({ store: new Map<string, string>(), readError: null as null | { code: string; message: string; value: string } }))
 vi.mock('../native/secureVault', () => ({
   SECURE_SECRET_KEYS: { openAiApiKey: 'openai-api-key', anthropicApiKey: 'anthropic-api-key', publikApiKey: 'publik-api-key' },
   secureVaultStatus: async () => ({ available: true, persistence: 'keychain', hardwareBacked: false, platform: 'ios' }),
   setSecureSecret: async (key: string, value: string) => {
     vault.store.set(key, value)
   },
-  getSecureSecret: async (key: string) => vault.store.get(key) ?? null,
+  getSecureSecret: async (key: string) => {
+    if (vault.readError && vault.store.get(key) === vault.readError.value) throw Object.assign(new Error(vault.readError.message), { code: vault.readError.code })
+    return vault.store.get(key) ?? null
+  },
   deleteSecureSecret: async (key: string) => {
     vault.store.delete(key)
   },
 }))
 
-const settings = vi.hoisted(() => ({ store: new Map<string, string>() }))
+// failOnce: 'get:<key>', 'set:<key>' or 'remove:<key>' fails once (a closed database).
+const settings = vi.hoisted(() => ({ store: new Map<string, string>(), failOnce: new Set<string>() }))
 vi.mock('../db/schema', () => {
   const keys = [
     'birthYear', 'aiProvider', 'aiModel', 'aiBaseUrl',
     'publikInstallId', 'publikClaimUrl', 'publikClaimState', 'publikBaseUrl', 'publikModels', 'publikStarterMicros',
     'publikCostSentence', 'publikCardSeen', 'publikDisclosureVersion', 'publikChoice', 'publikTelemetryId', 'publikUsage',
+    'aiHealthConsent',
   ]
+  const fail = (op: string, key: string) => {
+    if (settings.failOnce.delete(`${op}:${key}`)) throw new Error('The database is closed.')
+  }
   return {
     SK: Object.fromEntries(keys.map((k) => [k, k])),
-    getSetting: async (key: string) => settings.store.get(key),
+    getSetting: async (key: string) => {
+      fail('get', key)
+      return settings.store.get(key)
+    },
     setSetting: async (key: string, value: string) => {
+      fail('set', key)
       settings.store.set(key, value)
     },
     removeSetting: async (key: string) => {
+      fail('remove', key)
       settings.store.delete(key)
     },
   }
 })
 
 vi.mock('./publikBuild', () => ({
-  PUBLIK_APP_TOKEN_PLACEHOLDER: 'pat_lunara_REPLACE_ME',
   PUBLIK_BUILD: {
     appSlug: 'lunara',
     appVersion: '0.2.1',
@@ -101,7 +114,8 @@ vi.mock('@capacitor/browser', () => ({
   },
 }))
 
-// The fake publik: /installs, /wallet, /telemetry. `wallets` is a queue; the last one repeats.
+// The fake publik: /installs, /wallet, /telemetry, /installs/revoke. `wallets` is a queue; the last one repeats.
+// `atRevoke` records what this phone still held when the revoke call left.
 type Wallet = { claim_state: 'anonymous' | 'claimed'; account?: { handle: string | null } | null; plan?: { kind: string; label: string | null }; balance_micros?: number }
 const net = vi.hoisted(() => ({
   offline: false,
@@ -110,6 +124,7 @@ const net = vi.hoisted(() => ({
   installsStatus: 201,
   revokedKey: '',
   calls: [] as Array<{ url: string; method: string; auth: string | null; body: string | null }>,
+  atRevoke: null as null | { vaultKey: boolean; settings: string[]; healthConsent: string | undefined },
 }))
 vi.mock('./providerFetch', () => ({
   providerFetch: async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -130,6 +145,14 @@ vi.mock('./providerFetch', () => ({
       return json(200, { plan: { kind: 'none', label: null }, balance_micros: 0, account: null, ...w, claim_url: `${base}/claim/abc`, top_up_url: `${base}/wallet?top_up=1`, linked_at: null })
     }
     if (url.endsWith('/api/v1/telemetry')) return new Response(null, { status: 204 })
+    if (url.endsWith('/api/v1/installs/revoke')) {
+      net.atRevoke = {
+        vaultKey: vault.store.has('publik-api-key'),
+        settings: [...settings.store.keys()].filter((k) => k.startsWith('publik') && k !== 'publikUsage' && k !== 'publikTelemetryId'),
+        healthConsent: settings.store.get('aiHealthConsent'),
+      }
+      return new Response(null, { status: 204 })
+    }
     return json(404, {})
   },
 }))
@@ -139,13 +162,16 @@ import {
   _resetPublikForTests,
   accountDeletionUrl,
   deletePublikDataOnThisPhone,
+  disconnectPublik,
   ensureSignedIn,
   gateScreen,
   loadLaunchOptions,
   needsSignInOnDemand,
+  onPublikSignOut,
   openWithoutWall,
   signedInHere,
   signInOnDemand,
+  type GateAction,
   type GateScreen,
   type GateUI,
 } from './publik'
@@ -194,7 +220,9 @@ beforeEach(() => {
   runtime.isNative = true
   runtime.nativePlatform = 'ios'
   vault.store.clear()
+  vault.readError = null
   settings.store.clear()
+  settings.failOnce.clear()
   settings.store.set('birthYear', '1990')
   native.launch = {}
   native.selfTestLines = []
@@ -205,6 +233,7 @@ beforeEach(() => {
   net.installsStatus = 201
   net.revokedKey = ''
   net.calls = []
+  net.atRevoke = null
 })
 
 afterEach(() => {
@@ -219,11 +248,13 @@ describe('the gate words', () => {
     expect(gateScreen('unreachable', null)).toMatchObject({ title: WORDS.title, body: WORDS.unreachable, buttons: [{ action: 'retry', label: 'Retry' }] })
     const choose = gateScreen('choose', { claim_state: 'claimed', claim_url: null, account: { handle: 'mann' }, plan: { kind: 'none', label: null }, balance_micros: 0, top_up_url: 'x', linked_at: null })
     expect(choose.title).toBe(WORDS.chooseTitle)
-    expect(choose.body).toBe('You are signed in as @mann. This app uses AI. Get a publik plan, or use your own key.')
+    // No handle and no balance: the plan screen can show before the PIN lock.
+    expect(choose.body).toBe('You are signed in to publik. This app uses AI. Get a publik plan, or use your own key.')
     expect(choose.buttons.map((b) => b.label)).toEqual(['Get a plan', 'Use my own key'])
     const connect = gateScreen('choose', { claim_state: 'claimed', claim_url: null, account: null, plan: { kind: 'pack', label: null }, balance_micros: 2_500_000, top_up_url: 'x', linked_at: null })
     expect(connect.title).toBe(WORDS.connectTitle)
-    expect(connect.body).toBe('You are signed in to publik. Your balance: $2.50. Connect it to use AI in this app, or use your own key.')
+    expect(connect.body).toBe('You are signed in to publik. You have publik credit. Connect it to use AI in this app, or use your own key.')
+    expect(JSON.stringify([choose, connect])).not.toMatch(/@mann|\$2\.50/)
     expect(connect.buttons.map((b) => b.label)).toEqual(['Connect your plan', 'Use my own key'])
   })
 
@@ -252,7 +283,7 @@ describe('ensureSignedIn against a fake publik', () => {
       [WORDS.chooseTitle, WORDS.planWaiting],
       [WORDS.connectTitle, null],
     ])
-    expect(screens[4]!.body).toBe('You are signed in as @mann. Your plan: Plus. Connect it to use AI in this app, or use your own key.')
+    expect(screens[4]!.body).toBe('You are signed in to publik. You have a publik plan. Connect it to use AI in this app, or use your own key.')
     expect(opened).toEqual(['https://publikhq.com/claim/abc', 'https://publikhq.com/wallet?top_up=1'])
     expect(native.closed).toBe(2) // the in-app browser closes when publik says sign-in, then the plan, is done
     expect(gate).toMatchObject({ key: 'pk_live_gatetest', choice: 'publik', chosenNow: true, offline: false })
@@ -531,14 +562,21 @@ describe('PUBLIK_GATE_MODE and APP_STORE_BUILD build settings', () => {
     expect(gateMode()).toBe('required')
   })
 
-  it('APP_STORE_BUILD is off unless set to 1 or true', () => {
+  it('APP_STORE_BUILD is on by default in the iOS app only; 1 and 0 decide everywhere', () => {
+    expect(isAppStoreBuild()).toBe(true) // iOS, not set
+    runtime.nativePlatform = 'android'
+    expect(isAppStoreBuild()).toBe(false)
+    runtime.isNative = false
+    runtime.nativePlatform = 'web'
     expect(isAppStoreBuild()).toBe(false)
     vi.stubEnv('APP_STORE_BUILD', '1')
     expect(isAppStoreBuild()).toBe(true)
     vi.stubEnv('APP_STORE_BUILD', 'true')
     expect(isAppStoreBuild()).toBe(true)
+    runtime.isNative = true
+    runtime.nativePlatform = 'ios'
     vi.stubEnv('APP_STORE_BUILD', '0')
-    expect(isAppStoreBuild()).toBe(false)
+    expect(isAppStoreBuild()).toBe(false) // the opt-out; an Xcode Release archive refuses it
   })
 })
 
@@ -645,5 +683,191 @@ describe('Delete account', () => {
     expect(settings.store.get('publikUsage')).toBe('off')
     expect(settings.store.get('birthYear')).toBe('1990')
     expect(await signedInHere()).toBe(false)
+  })
+})
+
+/** A UI that answers "not reachable" with Retry at once, and waits on every other screen. */
+function retryingUI() {
+  const screens: GateScreen[] = []
+  const ui: GateUI = {
+    show(screen) {
+      screens.push(screen)
+      return screen.id === 'unreachable' ? Promise.resolve<GateAction>('retry') : new Promise<GateAction>(() => {})
+    },
+    openUrl() {},
+  }
+  return { ui, screens }
+}
+
+describe('the test hooks work only in a test build', () => {
+  it('a production bundle (no PUBLIK_TEST_HOOKS) ignores PUBLIK_API_BASE_URL and PUBLIK_SELF_TEST', async () => {
+    vi.stubEnv('DEV', false)
+    vi.stubEnv('PUBLIK_API_BASE_URL', 'http://127.0.0.1:8787/api/v1')
+    _resetPublikForTests()
+    native.launch = { PUBLIK_API_BASE_URL: 'http://127.0.0.1:8787/api/v1', PUBLIK_SELF_TEST: '1' }
+    await loadLaunchOptions()
+    expect(accountDeletionUrl()).toBe('https://publikhq.com/settings/profile#delete-account-title')
+    void ensureSignedIn(scriptedUI({ [WORDS.title]: 'wait' }).ui)
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(native.selfTestLines).toEqual([])
+    expect(net.calls.length).toBeGreaterThan(0)
+    expect(net.calls.every((c) => c.url.startsWith('https://publikhq.com/api/v1/'))).toBe(true)
+  })
+
+  it('a test build (PUBLIK_TEST_HOOKS=1) honours them', async () => {
+    vi.stubEnv('DEV', false)
+    vi.stubEnv('PUBLIK_TEST_HOOKS', '1')
+    _resetPublikForTests()
+    native.launch = { PUBLIK_API_BASE_URL: 'http://10.0.2.2:8787/api/v1' }
+    await loadLaunchOptions()
+    expect(accountDeletionUrl()).toBe('http://10.0.2.2:8787/settings/profile#delete-account-title')
+  })
+
+  it('PUBLIK_API_BASE_URL must point at this computer (127.0.0.1, localhost, 10.0.2.2)', async () => {
+    native.launch = { PUBLIK_API_BASE_URL: 'https://publik.example.org/api/v1' }
+    await loadLaunchOptions()
+    expect(accountDeletionUrl()).toBe('https://publikhq.com/settings/profile#delete-account-title')
+    _resetPublikForTests()
+    native.launch = { PUBLIK_API_BASE_URL: 'http://localhost:8787' }
+    await loadLaunchOptions()
+    expect(accountDeletionUrl()).toBe('http://localhost:8787/settings/profile#delete-account-title')
+  })
+})
+
+describe('a vault item that cannot be read never locks the person out', () => {
+  it('"Secret could not be decrypted": the item is deleted and the gate sets up a new install', async () => {
+    vault.store.set('publik-api-key', 'pk_live_unreadable')
+    vault.readError = { code: 'KEYSTORE_READ_FAILED', message: 'Secret could not be decrypted.', value: 'pk_live_unreadable' }
+    settings.store.set('publikInstallId', '11111111-1111-4111-8111-111111111111')
+    settings.store.set('publikClaimState', 'claimed')
+    const { ui, screens } = scriptedUI({ [WORDS.title]: 'wait' })
+    void ensureSignedIn(ui)
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(screens.map((s) => s.id)).toEqual(['sign_in'])
+    expect(vault.store.get('publik-api-key')).toBe('pk_live_gatetest')
+    expect(net.calls.filter((c) => c.url.endsWith('/api/v1/installs'))).toHaveLength(1)
+    expect(await signedInHere()).toBe(false)
+  })
+
+  it('KEYCHAIN_LOCKED (the iPhone is still locked): the key stays, "not reachable" shows, and Retry goes on', async () => {
+    vault.store.set('publik-api-key', 'pk_live_saved')
+    vault.readError = { code: 'KEYCHAIN_LOCKED', message: 'The phone is locked.', value: 'pk_live_saved' }
+    settings.store.set('publikClaimState', 'claimed')
+    settings.store.set('publikChoice', 'own_key')
+    net.wallets = [claimedPlan]
+    let retry: (action: GateAction) => void = () => undefined
+    const screens: GateScreen[] = []
+    const run = ensureSignedIn({
+      show(screen) {
+        screens.push(screen)
+        return new Promise<GateAction>((resolve) => {
+          retry = resolve
+        })
+      },
+      openUrl() {},
+    })
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(screens.map((s) => [s.id, s.body])).toEqual([['unreachable', 'The phone is locked.']])
+    expect(vault.store.get('publik-api-key')).toBe('pk_live_saved')
+    expect(net.calls.filter((c) => c.url.endsWith('/api/v1/installs'))).toHaveLength(0)
+    vault.readError = null // unlocked
+    retry('retry')
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(await run).toMatchObject({ key: 'pk_live_saved', choice: 'own_key' })
+  })
+})
+
+describe('sign-out: the phone forgets first, then tells publik; counting stops; the gate comes back', () => {
+  async function signedIn() {
+    net.wallets = [claimedPlan]
+    settings.store.set('publikChoice', 'publik')
+    const run = ensureSignedIn(scriptedUI().ui)
+    await vi.advanceTimersByTimeAsync(1_000)
+    await run
+    expect(telemetryCalls()).toHaveLength(1)
+  }
+
+  it('deletes the key, the settings and the publik health permission before the revoke call, which still carries the key', async () => {
+    await signedIn()
+    settings.store.set('aiHealthConsent', JSON.stringify({ publik: ['cycle'], anthropic: ['notes'] }))
+    const announced: string[] = []
+    onPublikSignOut(() => announced.push('gate'))
+    await disconnectPublik()
+    expect(net.calls.find((c) => c.url.endsWith('/installs/revoke'))).toMatchObject({ method: 'POST', auth: 'Bearer pk_live_gatetest' })
+    expect(net.atRevoke).toEqual({ vaultKey: false, settings: [], healthConsent: JSON.stringify({ anthropic: ['notes'] }) })
+    expect(announced).toEqual(['gate']) // required mode: PublikGate shows the wall again
+    await vi.advanceTimersByTimeAsync(2 * 30 * 60_000)
+    expect(telemetryCalls()).toHaveLength(1) // no "still open" after sign-out
+    expect(await signedInHere()).toBe(false)
+  })
+
+  it('offline: the phone is signed out all the same, and the gate comes back', async () => {
+    await signedIn()
+    const announced: string[] = []
+    onPublikSignOut(() => announced.push('gate'))
+    net.offline = true
+    await disconnectPublik()
+    expect(vault.store.has('publik-api-key')).toBe(false)
+    expect(settings.store.has('publikClaimState')).toBe(false)
+    expect(announced).toEqual(['gate'])
+  })
+
+  it('Delete account also forgets the telemetry ID before the revoke; Delete all data (returnToGate: false) restarts the app itself', async () => {
+    await signedIn()
+    const announced: string[] = []
+    onPublikSignOut(() => announced.push('gate'))
+    await deletePublikDataOnThisPhone()
+    expect(net.atRevoke).toMatchObject({ vaultKey: false, settings: [] })
+    expect(settings.store.has('publikTelemetryId')).toBe(false)
+    expect(announced).toEqual(['gate'])
+
+    vault.store.set('publik-api-key', 'pk_live_again')
+    await disconnectPublik(undefined, { returnToGate: false })
+    expect(vault.store.has('publik-api-key')).toBe(false)
+    expect(announced).toEqual(['gate']) // not announced again
+  })
+
+  it('a revoked key (401) found by a later gate run stops counting too', async () => {
+    await signedIn()
+    net.revokedKey = 'pk_live_gatetest'
+    net.installsStatus = 400 // the new install cannot be set up: the gate waits on "not reachable"
+    void ensureSignedIn(scriptedUI().ui)
+    await vi.advanceTimersByTimeAsync(2 * 30 * 60_000)
+    expect(telemetryCalls()).toHaveLength(1)
+  })
+})
+
+describe('the gate never freezes', () => {
+  it('a failure while it forgets a revoked key shows "not reachable" with Retry; Retry goes on to Sign in', async () => {
+    vault.store.set('publik-api-key', 'pk_live_old')
+    settings.store.set('publikClaimState', 'claimed')
+    net.revokedKey = 'pk_live_old'
+    settings.failOnce.add('remove:publikChoice') // forgetInstall() removes it; the database fails once
+    const { ui, screens } = retryingUI()
+    void ensureSignedIn(ui)
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(screens.map((s) => [s.id, s.body])).toEqual([
+      ['unreachable', 'The database is closed.'],
+      ['sign_in', WORDS.signInBody],
+    ])
+    expect(screens[0]!.buttons).toEqual([{ action: 'retry', label: 'Retry' }])
+  })
+
+  it('a failure while it reads the age or saves the plan answer shows Retry, then the plan screen again', async () => {
+    net.wallets = [claimedEmpty]
+    settings.failOnce.add('get:birthYear')
+    settings.failOnce.add('set:publikChoice')
+    const screens: GateScreen[] = []
+    const run = ensureSignedIn({
+      show(screen) {
+        screens.push(screen)
+        return Promise.resolve<GateAction>(screen.id === 'unreachable' ? 'retry' : 'own_key')
+      },
+      openUrl() {},
+    })
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(await run).toMatchObject({ choice: 'own_key', chosenNow: true })
+    expect(screens.map((s) => s.id)).toEqual(['unreachable', 'choose', 'unreachable', 'choose'])
+    expect(settings.store.get('publikChoice')).toBe('own_key')
   })
 })
