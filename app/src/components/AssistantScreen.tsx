@@ -26,10 +26,14 @@ import { screenAssistantUrgency } from '../lib/assistantSafety'
 import { gateMode } from '../lib/buildFlags'
 import { chatDestination, historyForSend, NEW_CHAT_NOTICE } from '../lib/chatHistory'
 import {
-  allowHealthSharing,
-  HEALTH_KIND_LABELS,
+  agreeToChat,
+  CHAT_AGREEMENT_TITLE,
+  CHAT_SENDS_EVERY_TIME,
+  CHAT_SENDS_WITH_TICKED,
+  chatAgreementBody,
+  chatAgreementNeeded,
+  HEALTH_KINDS,
   healthDestination,
-  healthKindsNeedingConsent,
   selectedHealthKinds,
   type HealthDestination,
   type HealthKind,
@@ -72,22 +76,8 @@ import { useApp } from '../state/appStore'
 import { LunaraMark } from './LunaraMark'
 import '../styles/assistant.css'
 
-const CONSENT_OPTIONS: Array<{
-  key: keyof AssistantConsent
-  title: string
-  detail: string
-  sensitive?: boolean
-}> = [
-  { key: 'cycle', title: 'Cycle summary', detail: 'Period starts and current prediction' },
-  { key: 'symptoms', title: 'Symptoms & mood', detail: 'Up to 30 recent logged days' },
-  {
-    key: 'fertility',
-    title: 'Fertility & intimacy',
-    detail: 'BBT, tests, discharge, sex, and pregnancy timing',
-    sensitive: true,
-  },
-  { key: 'notes', title: 'Private notes', detail: 'Up to 12 recent notes', sensitive: true },
-]
+// The same words on the agreement screen and under Tracker context: exactly what each category sends.
+const CONSENT_OPTIONS = (Object.keys(HEALTH_KINDS) as HealthKind[]).map((key) => ({ key, ...HEALTH_KINDS[key] }))
 
 const STARTERS = [
   'What can change cycle length?',
@@ -155,8 +145,9 @@ export function AssistantScreen() {
   const [starterMicros, setStarterMicros] = useState<number | null>(null)
   const [costSentence, setCostSentence] = useState(PUBLIK_WHY_IT_COSTS)
   const [publikCard, setPublikCard] = useState<PublikCard | null>(null)
-  // The first message that sends tracker data to a provider waits for this screen (lib/healthConsent.ts).
-  const [healthAsk, setHealthAsk] = useState<{ text: string; kinds: HealthKind[]; destination: HealthDestination } | null>(null)
+  // "AI chat sends data off this phone" (lib/healthConsent.ts): nothing goes to a provider before "I agree".
+  // `text` is the message that waits for the answer (null: the screen came when AI chat opened).
+  const [chatAsk, setChatAsk] = useState<{ text: string | null; destination: HealthDestination } | null>(null)
   const subscriptionTokens = claudeSubscriptionTokensAllowed()
   const scroller = useRef<HTMLDivElement>(null)
   const composerInput = useRef<HTMLTextAreaElement>(null)
@@ -287,6 +278,22 @@ export function AssistantScreen() {
     scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: 'smooth' })
   }, [messages, busy])
 
+  // AI chat starts with the agreement screen when this provider has no agreement yet.
+  // send() checks again, so a message typed before this answer still waits for it.
+  useEffect(() => {
+    if (loading || setupOpen || !apiKey) return
+    let alive = true
+    const destination = healthDestination(provider, baseUrl)
+    void chatAgreementNeeded(destination, selectedHealthKinds(consent)).then((needed) => {
+      if (alive && needed) setChatAsk((ask) => ask ?? { text: null, destination })
+    })
+    return () => {
+      alive = false
+    }
+    // Ticks changed in the chat are checked by send(), not here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, setupOpen, apiKey, provider, baseUrl])
+
   useEffect(() => {
     const textarea = composerInput.current
     if (!textarea) return
@@ -305,6 +312,8 @@ export function AssistantScreen() {
     // A new provider starts a new chat: the earlier messages never go to it.
     setMessages([])
     setChatSentTo(null)
+    // A waiting message was for the earlier provider; the new one gets its own agreement screen.
+    setChatAsk(null)
     setApiKey(await getSecureSecretOrForget(vaultKeyFor(next)))
   }
 
@@ -459,7 +468,7 @@ export function AssistantScreen() {
     await setSetting(SK.aiConsent, JSON.stringify(next))
   }
 
-  async function send(textOverride?: string, healthAllowed = false) {
+  async function send(textOverride?: string, agreed = false) {
     const text = (textOverride ?? input).trim()
     if (!text || busy) return
     if (!apiKey) {
@@ -476,13 +485,13 @@ export function AssistantScreen() {
       return
     }
 
+    // An urgent message gets the safety answer on this phone, with no provider request.
     const safetyIntercept = screenAssistantUrgency(text)
-    if (!safetyIntercept && !healthAllowed) {
-      // Health data goes to a provider only after the person allows it for that provider, once.
+    if (!safetyIntercept && !agreed) {
+      // Nothing goes to a provider before "I agree" for that provider and every ticked category.
       const destination = healthDestination(provider, baseUrl)
-      const missing = await healthKindsNeedingConsent(destination, selectedHealthKinds(consent))
-      if (missing.length > 0) {
-        setHealthAsk({ text, kinds: selectedHealthKinds(consent), destination })
+      if (await chatAgreementNeeded(destination, selectedHealthKinds(consent))) {
+        setChatAsk({ text, destination })
         return
       }
     }
@@ -542,17 +551,19 @@ export function AssistantScreen() {
     }
   }
 
-  async function allowHealthAndSend() {
-    if (!healthAsk) return
-    const { text, kinds, destination } = healthAsk
-    await allowHealthSharing(destination, kinds)
-    setHealthAsk(null)
-    await send(text, true)
+  /** "I agree": AI chat with this provider and the ticked categories; then the waiting message goes. */
+  async function agreeAndContinue() {
+    if (!chatAsk) return
+    const { text, destination } = chatAsk
+    await agreeToChat(destination, selectedHealthKinds(consent))
+    setChatAsk(null)
+    if (text) await send(text, true)
   }
 
-  function healthNotNow() {
-    setHealthAsk(null)
-    setNotice('Nothing was sent. Lunara AI does not send tracker data until you allow it. To ask without it, turn off the categories under Tracker context.')
+  /** "Not now": AI chat closes and sends nothing. */
+  function chatNotNow() {
+    setChatAsk(null)
+    setAssistantOpen(false)
   }
 
   function publikErrorAction(failure: PublikApiError): { label: string; run: () => void } | null {
@@ -637,32 +648,46 @@ export function AssistantScreen() {
           <LunaraMark decorative size={30} />
           <span>Preparing your private space…</span>
         </div>
-      ) : healthAsk ? (
-        <div className="overlay-body assistant-setup assistant-health-consent" role="alertdialog" aria-label="Share health data">
+      ) : chatAsk && !setupOpen ? (
+        <div className="overlay-body assistant-setup assistant-health-consent" role="alertdialog" aria-labelledby="ai-chat-agreement-title">
           <section className="assistant-setup-intro">
-            <p className="eyebrow">Your permission</p>
-            <h3>Send health data to {healthAsk.destination.name}?</h3>
-            <p>Your next message carries this tracker data from this phone:</p>
+            <p className="eyebrow">Before AI chat</p>
+            <h3 id="ai-chat-agreement-title">{CHAT_AGREEMENT_TITLE}</h3>
+            {chatAgreementBody(chatAsk.destination).map((line) => (
+              <p key={line}>{line}</p>
+            ))}
           </section>
           <section className="card ai-setup-card">
+            <p className="microcopy"><strong>Every message sends</strong></p>
             <ul>
-              {healthAsk.kinds.map((kind) => (
-                <li key={kind} className="microcopy">{HEALTH_KIND_LABELS[kind]}</li>
-              ))}
+              <li className="microcopy">{CHAT_SENDS_EVERY_TIME}</li>
             </ul>
-            <p className="microcopy">
-              It goes to <strong>{healthAsk.destination.name}</strong> to answer your question.
-              {provider === 'publik' ? ` ${PUBLIK_DATA_PATH}` : ' That provider’s own terms apply to what it keeps.'}
-            </p>
-            <p className="microcopy">
-              Lunara sends only the categories you select, only with the message you send. Turn a
-              category off under Tracker context at any time.
-            </p>
+            <p className="microcopy"><strong>Tick the tracker data to send with it</strong></p>
+            <div className="consent-grid">
+              {CONSENT_OPTIONS.map((option) => (
+                <button
+                  key={option.key}
+                  className={`consent-row ${consent[option.key] ? 'selected' : ''}`}
+                  onClick={() => toggleConsent(option.key)}
+                  aria-pressed={consent[option.key]}
+                >
+                  <span>
+                    <strong>{option.title}</strong>
+                    <small>
+                      {option.detail}
+                      {option.sensitive ? ' · Sensitive' : ''}
+                    </small>
+                  </span>
+                  <span className="toggle-dot" aria-hidden="true"><i /></span>
+                </button>
+              ))}
+            </div>
+            <p className="microcopy">{CHAT_SENDS_WITH_TICKED}</p>
           </section>
-          <button className="cta" onClick={() => void allowHealthAndSend()}>
-            Allow and send
+          <button className="cta" onClick={() => void agreeAndContinue()}>
+            I agree
           </button>
-          <button className="text-button" onClick={healthNotNow}>
+          <button className="text-button" onClick={chatNotNow}>
             Not now
           </button>
         </div>
@@ -693,8 +718,8 @@ export function AssistantScreen() {
             <h3>Choose where answers come from</h3>
             <p>
               {publikHere
-                ? 'publik API needs no key. Your own key, if you add one, stays on this device.'
-                : 'Your key stays on this device.'}
+                ? 'publik API needs no key. If you add your own key, Lunara keeps it on this phone and sends it only to that provider.'
+                : 'Lunara keeps your key on this phone and sends it only to that provider.'}
             </p>
             <div className="ai-provider-grid">
               {publikHere && (
@@ -995,7 +1020,7 @@ export function AssistantScreen() {
         </>
       )}
 
-      {!loading && !setupOpen && !publikCard && !healthAsk && (
+      {!loading && !setupOpen && !publikCard && !chatAsk && (
         <form
           className="assistant-compose"
           onSubmit={(event) => {

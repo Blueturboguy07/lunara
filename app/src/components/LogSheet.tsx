@@ -440,7 +440,7 @@ export function LogSheet({
       {isVisible('intimacy') && visibleIntimacy.length > 0 && (
         <div id="tracker-intimacy" className="tracker-section" style={sectionStyle('intimacy')}>
           <div className="section-label">Sex &amp; drive</div>
-          <div className="muted">Choose every item that applies. These entries stay on your device.</div>
+          <div className="muted">Choose every item that applies. Your data stays on this phone unless you turn on AI chat or encrypted backup.</div>
           <div className="chip-wrap">
             {visibleIntimacy.map((s) => (
               <button

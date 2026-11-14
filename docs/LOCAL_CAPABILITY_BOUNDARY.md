@@ -43,10 +43,13 @@ browser:
 
 ## Optional external dependencies
 
-- OpenAI mode sends the user's prompt plus only the tracker categories they
-  explicitly toggle on to OpenAI's API. It requires internet access, a project
-  key, API access and billing. Lunara sets `store: false`; it does not proxy the
-  request through a Lunara server.
+- AI chat sends data off the phone, and only after the person agrees on the
+  screen "AI chat sends data off this phone" (`app/src/lib/healthConsent.ts`).
+  Each message sends the message, the earlier messages of the chat (up to 16)
+  and only the tracker categories the person ticks. With the person's own
+  OpenAI key it goes straight to OpenAI's API (`store: false`); it does not go
+  through a Lunara or publik server. It requires internet access, a project
+  key, API access and billing.
 - Zero-knowledge automatic backup needs somewhere to store the encrypted blob.
   The included Worker can be self-hosted, but it is still an external machine.
 - Fresh editorial/medical content requires a review and update process. Bundled

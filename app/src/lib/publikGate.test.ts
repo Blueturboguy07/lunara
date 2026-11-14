@@ -787,14 +787,14 @@ describe('sign-out: the phone forgets first, then tells publik; counting stops; 
     expect(telemetryCalls()).toHaveLength(1)
   }
 
-  it('deletes the key, the settings and the publik health permission before the revoke call, which still carries the key', async () => {
+  it('deletes the key, the settings and the AI chat agreement with publik before the revoke call, which still carries the key', async () => {
     await signedIn()
-    settings.store.set('aiHealthConsent', JSON.stringify({ publik: ['cycle'], anthropic: ['notes'] }))
+    settings.store.set('aiHealthConsent', JSON.stringify({ v: 2, agreed: { publik: ['cycle'], anthropic: ['notes'] } }))
     const announced: string[] = []
     onPublikSignOut(() => announced.push('gate'))
     await disconnectPublik()
     expect(net.calls.find((c) => c.url.endsWith('/installs/revoke'))).toMatchObject({ method: 'POST', auth: 'Bearer pk_live_gatetest' })
-    expect(net.atRevoke).toEqual({ vaultKey: false, settings: [], healthConsent: JSON.stringify({ anthropic: ['notes'] }) })
+    expect(net.atRevoke).toEqual({ vaultKey: false, settings: [], healthConsent: JSON.stringify({ v: 2, agreed: { anthropic: ['notes'] } }) })
     expect(announced).toEqual(['gate']) // required mode: PublikGate shows the wall again
     await vi.advanceTimersByTimeAsync(2 * 30 * 60_000)
     expect(telemetryCalls()).toHaveLength(1) // no "still open" after sign-out

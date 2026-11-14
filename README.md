@@ -8,10 +8,11 @@
 
 **An open-source, local-first cycle, fertility, pregnancy, and perimenopause companion.**
 
-Lunara ships through native iOS and Android shells powered by Capacitor. Core
-tracking works without an account or Lunara-hosted user database. Optional
-backup and AI features transmit data only after you enable them; their scope and
-security boundaries are documented in the repository.
+Lunara ships through native iOS and Android shells powered by Capacitor. Your
+data stays on this phone unless you turn on AI chat or encrypted backup. There
+is no Lunara-hosted database of your health data. AI chat sends data only after
+you agree on its own screen (see "AI chat sends data off this phone" below).
+Encrypted backup sends a copy that the backup server cannot read.
 
 Lunara is an open-source alternative to Flo®. It is not affiliated with, endorsed by, or connected to Flo Health Inc.
 
@@ -20,8 +21,8 @@ Lunara is an open-source alternative to Flo®. It is not affiliated with, endors
 - **No subscription gate.** Tracking, pattern insights, reports, pregnancy
   guidance, and perimenopause tools are part of the open-source app.
 - **Local first by architecture.** Core logs live in the app's local storage.
-  Optional backup stores a client-encrypted blob; optional AI shares only the
-  categories you select for that request.
+  Optional backup stores a client-encrypted blob. Optional AI chat sends your
+  messages and only the tracker categories you tick, after you agree.
 - **No 54-screen onboarding funnel. No paywall gauntlet. No nagging.**
 
 ---
@@ -89,11 +90,14 @@ account gives $0.05 of free use, once, and after that every request is priced
 per use at 50% of the model's published list price from your publik balance —
 the AI model behind it is run by a provider that charges per use, publik passes
 that on at half list, nothing is charged behind your back, and every call is
-visible on your publik dashboard. Only your message and the tracker categories you tick
-are sent, through publik's servers to a shared model account; publik never
-trains on them and does not store them. Prefer your own provider? Pick
-Anthropic or OpenAI in AI settings and paste your own key — it stays in your
-phone's Keychain or Keystore. Building a private copy? Put
+visible on your publik dashboard. AI chat asks before it sends anything. Then
+your message, the earlier messages in the chat and the tracker categories you
+tick go through publik's servers to the AI model provider that publik uses.
+publik does not use this data for any other purpose: no ads, no analytics, no
+training, no sale. Prefer your own provider? Pick Anthropic or OpenAI in AI
+settings and paste your own key. Lunara keeps it in your phone's Keychain or
+Keystore. Your messages then go straight from the phone to that provider, under
+your own account with it, and publik never sees them. Building a private copy? Put
 `VITE_PUBLIK_APP_TOKEN=pat_lunara_…` in `app/.env.native` before
 `native:sync` (or in `app/.env.production` for `pnpm build`).
 
@@ -273,9 +277,23 @@ fails when they differ.
   data on this phone, asks separately before it deletes cycle data, then opens
   publik's deletion page in the in-app browser. Settings → publik → Sign out
   signs this phone out and keeps your data.
-- **Health data and AI.** Before Lunara AI sends a tracker category to an AI
-  provider for the first time, it shows who gets the data and which kinds.
-  "Not now" sends nothing.
+- **AI chat sends data off this phone.** Without AI chat, your health and
+  cycle data stays on this phone (an encrypted backup, if you turn it on, sends
+  a copy that the backup server cannot read). Before AI chat sends anything to
+  a provider, Lunara shows the screen "AI chat sends data off this phone". It
+  names the receiver and lists exactly what a message sends:
+  - every time: your message and the earlier messages in the chat, up to 16
+    messages, each cut at 6,000 characters;
+  - the tracker categories you tick on that screen (cycle summary, symptoms
+    and mood, fertility and intimacy, private notes), with today's date.
+  On publik API the screen says: "publik does not use this data for any other
+  purpose: no ads, no analytics, no training, no sale." With your own key
+  (Anthropic, OpenAI, or an OpenAI-compatible service) it says that the data
+  goes straight to that provider under your own account, and publik never sees
+  it. "I agree" sends. "Not now" closes AI chat and sends nothing. A new
+  provider, or a newly ticked category, shows the screen again. Sign-out and
+  Delete account end the agreement with publik. The numbers live in
+  `app/src/lib/aiLimits.ts`; a test compares the screen with the request.
 - **Test builds.** `.github/workflows/mobile-test-builds.yml` builds a debug
   APK (`android-debug-apk`) and two unsigned arm64 iOS simulator apps, both
   App Store builds: `ios-sim-app` (gate required) and `ios-sim-app-optional`

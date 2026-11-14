@@ -8,6 +8,7 @@ import {
   type Goal,
 } from '../db/schema'
 import { predict } from '../engine/cycle'
+import { AI_LIMITS } from './aiLimits'
 import { localToday } from './dates'
 import type { ApprovedAssistantContext } from './assistant'
 
@@ -70,7 +71,7 @@ export function buildApprovedAssistantContext(
   if (consent.cycle) {
     result.cycle = {
       trackingMode: source.goal,
-      recentPeriodStarts: source.periodStarts.slice(-8),
+      recentPeriodStarts: source.periodStarts.slice(-AI_LIMITS.periodStarts),
       prediction: {
         cycleDay: prediction.cycleDay,
         averageCycleLength: prediction.averageCycleLength || null,
@@ -96,7 +97,7 @@ export function buildApprovedAssistantContext(
           moods: log.moods,
           events: log.events,
         })),
-      30,
+      AI_LIMITS.loggedDays,
     )
   }
 
@@ -124,7 +125,7 @@ export function buildApprovedAssistantContext(
             discharge: log.discharge,
             intimacy: log.sex,
           })),
-        30,
+        AI_LIMITS.loggedDays,
       ),
     }
   }
@@ -133,8 +134,8 @@ export function buildApprovedAssistantContext(
     result.notes = recent(
       source.logs
         .filter((log) => Boolean(log.notes?.trim()))
-        .map((log) => ({ date: log.date, text: log.notes!.trim().slice(0, 400) })),
-      12,
+        .map((log) => ({ date: log.date, text: log.notes!.trim().slice(0, AI_LIMITS.noteChars) })),
+      AI_LIMITS.notes,
     )
   }
 

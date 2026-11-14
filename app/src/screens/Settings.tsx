@@ -22,6 +22,7 @@ import type { Envelope } from '../crypto/vault'
 import { applyImport, collectExport, decryptImport, encryptedExport, shareOrDownload } from '../db/transfer'
 import { signInWithPublik } from '../components/PublikGate'
 import { pushBackup, restoreBackup } from '../lib/backup'
+import { DATA_STAYS_ON_PHONE } from '../lib/healthConsent'
 import { gateMode } from '../lib/buildFlags'
 import { localToday } from '../lib/dates'
 import {
@@ -1231,6 +1232,9 @@ export function Settings() {
               <span className="muted">›</span>
             </button>
           )}
+          <p className="microcopy" style={{ padding: '4px 0 12px' }}>
+            {DATA_STAYS_ON_PHONE} Before AI chat sends anything, it shows what goes to which provider and waits for your agreement.
+          </p>
         </Section>
       )}
 
@@ -1265,7 +1269,7 @@ export function Settings() {
               : ''}
           Usage counting starts only after you sign in. When it is on, Lunara tries to send publik
           only “app opened” and “still open”, with a random ID, the app version and the phone type.
-          It never sends your logs, cycle dates or any other health data.
+          Usage counting never sends your logs, cycle dates or any other health data.
         </p>
       </Section>
 

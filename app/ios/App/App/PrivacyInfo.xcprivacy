@@ -14,12 +14,17 @@
     DeviceID            the publik install ID, the install key and the random
                         usage-counting ID (sign-in, usage counting).
     ProductInteraction  "app_opened" and "active_session" (usage counting).
-    Health, SensitiveInfo, OtherUserContent: only when the person asks Lunara AI
-                        and ticks tracker categories (and allows it once per
-                        provider). The message and those categories go through
-                        publik to its model provider, or to the person's own
-                        provider. publik does not store them; a model provider
-                        may keep them under its own terms. Not linked.
+    OtherUserContent    the chat messages (the message and up to 15 earlier
+                        ones), only when the person uses Lunara AI and agreed on
+                        "AI chat sends data off this phone" for that provider.
+    Health, SensitiveInfo: only the tracker categories the person ticks and
+                        agreed to for that provider.
+                        On publik API they go through publik to its model
+                        provider; publik does not use them for any other
+                        purpose (no ads, no analytics, no training, no sale); a
+                        model provider may keep them under its own terms. With
+                        the person's own key they go straight to that provider
+                        and publik never sees them. Not linked.
 -->
 <plist version="1.0">
 <dict>

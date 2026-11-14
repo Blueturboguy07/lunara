@@ -63,7 +63,7 @@ export function CycleReportScreen({ onBack }: CycleReportScreenProps) {
           {!data ? (
             <div className="health-empty">
               <strong>Building your report</strong>
-              <p>Your entries stay on this device while Lunara calculates the summary.</p>
+              <p>Lunara calculates this summary on this phone.</p>
             </div>
           ) : (
             <>

@@ -101,8 +101,9 @@ const LINK_FOR_FREE_USE = `$0.00 · link this phone for ${dollars(PUBLIK_LINK_ST
 export const PUBLIK_WHY_IT_COSTS =
   "The AI model behind Lunara is run by a provider that charges per use; publik passes that on at half the provider's list price, nothing is charged behind your back, and you can see every call on your dashboard."
 
+/** Where an AI chat message goes on publik API. The agreement screen (lib/healthConsent.ts) lists the exact data. */
 export const PUBLIK_DATA_PATH =
-  'Only your message and the tracker categories you tick go through publik’s servers to a shared model account. publik never trains on them and does not store them. Your cycle history stays on this phone.'
+  'AI chat asks before it sends anything. Then your message, the earlier messages in the chat and the tracker data you tick go through publik’s servers to the AI model provider that publik uses. publik does not use this data for any other purpose: no ads, no analytics, no training, no sale.'
 
 /** The primary button while anonymous (CONTRACT §12.1c) and once claimed (§12.2). */
 export function publikLinkButtonLabel(claimState: PublikClaimState | null): string {

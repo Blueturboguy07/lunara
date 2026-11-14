@@ -55,7 +55,7 @@ import {
   setSecureSecret,
 } from '../native/secureVault'
 import { testHooksOn } from './buildFlags'
-import { forgetHealthSharing } from './healthConsent'
+import { forgetChatAgreement } from './healthConsent'
 import { providerFetch } from './providerFetch'
 import {
   DEFAULT_PUBLIK_ENDPOINT,
@@ -739,8 +739,8 @@ interface SignOutOptions {
 /**
  * Sign-out, in this order, so that a crash or a slow network never leaves a signed-in phone:
  *   1. read the key into memory;
- *   2. stop usage counting; delete the vault item, every publik setting and the publik
- *      permission for health data (and, for Delete account, the telemetry ID);
+ *   2. stop usage counting; delete the vault item, every publik setting and the AI chat
+ *      agreement with publik (and, for Delete account, the telemetry ID);
  *   3. POST /installs/revoke with the key from memory, best effort (offline: publik's idle
  *      sweep revokes it later);
  *   4. tell PublikGate: in required mode the wall comes back at once.
@@ -753,7 +753,7 @@ async function signOutHere(fetchImpl: FetchLike, options: SignOutOptions & { for
   const local = await Promise.allSettled([
     deleteKey(),
     ...publikSettingKeys().map((name) => removeSetting(name)),
-    forgetHealthSharing('publik'),
+    forgetChatAgreement('publik'),
     options.forgetTelemetryId ? removeSetting(SK.publikTelemetryId) : Promise.resolve(),
   ])
   if (key) {

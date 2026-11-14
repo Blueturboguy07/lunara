@@ -26,6 +26,7 @@ import {
   type AssistantProvider,
 } from '../lib/assistant'
 import { localToday } from '../lib/dates'
+import { DATA_STAYS_ON_PHONE, healthDestination, ownKeyDataPath } from '../lib/healthConsent'
 import {
   DEFAULT_PUBLIK_MODEL,
   dollars,
@@ -905,7 +906,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         <QuestionIntro
           eyebrow="Let’s make this feel like yours"
           title="What should Lunara call you?"
-          body="A first name or nickname is enough. It never has to leave your device."
+          body="A first name or nickname is enough. AI chat never sends it."
         />
         <div className="field ob-hero-field">
           <label htmlFor="display-name">Name or nickname</label>
@@ -961,7 +962,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
       <Frame {...frameProps} chapter="Privacy">
         <QuestionIntro
           eyebrow="Sensitive data deserves a clear boundary"
-          title="Your core health history stays on this device."
+          title={DATA_STAYS_ON_PHONE}
           body="Lunara needs permission to store the answers and logs you choose to enter. You can export or erase them from Settings."
         />
         <div className="ob-summary-list privacy">
@@ -975,7 +976,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
           </article>
           <article>
             <span className="cautious">Ask first</span>
-            <div><strong>AI and health imports</strong><p>They remain separate and require an explicit setup or operating-system permission later.</p></div>
+            <div><strong>AI chat and health imports</strong><p>AI chat sends data off this phone only after you agree. Health imports need your phone’s permission.</p></div>
           </article>
         </div>
         {age !== null && !adult && (
@@ -1578,8 +1579,8 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
           title="Choose how the assistant runs."
           body={
             publikHere
-              ? 'Core tracking and calculations work without AI. The assistant runs on publik API unless you bring your own key.'
-              : 'Core tracking and calculations work without AI. You bring your own credential.'
+              ? 'Core tracking and calculations work without AI. The assistant runs on publik API unless you bring your own key. AI chat asks for your agreement before it sends anything off this phone.'
+              : 'Core tracking and calculations work without AI. You bring your own credential. AI chat asks for your agreement before it sends anything off this phone.'
           }
         />
         <div className="ai-provider-grid">
@@ -1673,6 +1674,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
                 token here. Lunara cannot run the CLI itself from a mobile app.
               </p>
             )}
+            <p className="microcopy">{ownKeyDataPath(healthDestination('anthropic'))}</p>
           </div>
         ) : (
           <div className="card ai-setup-card">
@@ -1695,6 +1697,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
               <input id="openai-model" autoCapitalize="none" spellCheck={false} value={model} onChange={(event) => setModel(event.target.value)} />
             </div>
             <p className="microcopy">Use a dedicated project key with a spending limit. Never paste a personal or reused secret into screenshots or chat.</p>
+            <p className="microcopy">{ownKeyDataPath(healthDestination('openai', baseUrl))}</p>
           </div>
         )}
         {provider === 'publik' && publikInstall ? (

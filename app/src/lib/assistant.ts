@@ -1,4 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk'
+import { AI_LIMITS } from './aiLimits'
 import { isAppStoreBuild } from './buildFlags'
 import { providerFetch } from './providerFetch'
 import {
@@ -161,12 +162,13 @@ function apiError(provider: VendorProvider, status: number): Error {
   return new Error(`Assistant request failed (${status}). Check the provider and model settings.`)
 }
 
-function boundedHistory(history: ChatMessage[]): ChatMessage[] {
-  return history.slice(-16).map((message) => ({
+/** The message and the earlier messages that go with it (the agreement screen lists the same limits). */
+export function boundedHistory(history: ChatMessage[]): ChatMessage[] {
+  return history.slice(-AI_LIMITS.chatMessages).map((message) => ({
     role: message.role,
     content:
-      message.content.length > 6_000
-        ? `${message.content.slice(0, 6_000)}\n[message truncated]`
+      message.content.length > AI_LIMITS.messageChars
+        ? `${message.content.slice(0, AI_LIMITS.messageChars)}\n[message truncated]`
         : message.content,
   }))
 }
@@ -202,9 +204,9 @@ async function askAnthropic(
       ? { authToken: credential, defaultHeaders: { 'anthropic-beta': ANTHROPIC_OAUTH_BETA } }
       : { apiKey: credential }),
     fetch: fetchImpl,
-    // The credential is the user's own, entered on their device, and is never
-    // sent anywhere but Anthropic. There is no server to proxy through in a
-    // local-first app.
+    // The credential is the user's own, entered on their phone, and is never
+    // sent anywhere but Anthropic. The call goes straight from the phone to
+    // Anthropic: publik never sees it.
     dangerouslyAllowBrowser: true,
     maxRetries: 1,
   })
