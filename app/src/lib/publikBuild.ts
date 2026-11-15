@@ -28,13 +28,13 @@ const envToken = (import.meta.env.VITE_PUBLIK_APP_TOKEN as string | undefined)?.
 export const PUBLIK_BUILD = {
   appSlug: 'lunara',
   /** Mirrors app/package.json `version`; publikBuild.test.ts pins them equal. */
-  appVersion: '0.2.3',
+  appVersion: '0.2.4',
   appToken: envToken || PUBLIK_DEV_APP_TOKEN,
   /** Compiled default; the `base_url` field of POST /installs wins over it (CONTRACT §1). */
   baseUrl: 'https://publikhq.com/api/v1',
   /**
    * Recorded by the gateway with the install; bump when the disclosure copy changes.
-   * 3: a new phone starts at $0.00; linking a publik account gives $0.05 of free use, once.
+   * 3: a new phone starts empty; linking a publik account gives the one-time starter grant.
    */
   disclosureVersion: 3,
   dialects: ['responses'] as const,

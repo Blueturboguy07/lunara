@@ -2,6 +2,7 @@ import { Browser } from '@capacitor/browser'
 import { Children, isValidElement, type ReactNode, useEffect, useMemo, useState } from 'react'
 import { LunaraMark } from '../components/LunaraMark'
 import { APP_NAME } from '../lib/appName'
+import { PlanUseMeter } from '../components/PlanUseMeter'
 import { usePurchaseLinks } from '../components/usePurchaseLinks'
 import {
   createDefaultHealthProfile,
@@ -32,18 +33,15 @@ import { NO_LINK_PLAN_TEXT } from '../lib/storefront'
 import { DATA_STAYS_ON_PHONE, healthDestination, ownKeyDataPath } from '../lib/healthConsent'
 import {
   DEFAULT_PUBLIK_MODEL,
-  dollars,
   gateAsksPlanHere,
   isAdultBirthYear,
   markPublikCardSeen,
   provisionPublik,
   PUBLIK_BUILD,
   PUBLIK_DATA_PATH,
-  PUBLIK_LINK_STARTER_MICROS,
-  PUBLIK_STARTS_AT_ZERO,
-  PUBLIK_WHY_IT_COSTS,
+  PUBLIK_PLAN_SENTENCE,
   publikAvailable,
-  publikBalanceLine,
+  usageFromBalance,
   publikLinkButtonLabel,
   PublikApiError,
   readCredential,
@@ -1591,7 +1589,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         <div className="ai-provider-grid">
           {publikHere && (
             <OptionCard
-              option={{ id: 'publik', icon: '◐', label: 'publik API', detail: purchaseLinks ? `No key needed. Starts at $0.00; link your publik account for ${dollars(PUBLIK_LINK_STARTER_MICROS)} of free use, then priced per use.` : 'No key needed. Uses your publik plan.' }}
+              option={{ id: 'publik', icon: '◐', label: 'publik API', detail: 'No key needed. Uses your publik plan.' }}
               selected={provider === 'publik'}
               onClick={() => chooseProvider('publik')}
             />
@@ -1617,10 +1615,8 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         {provider === 'publik' && publikInstall ? (
           <div className="card ai-setup-card">
             <p className="microcopy"><strong>Lunara AI is ready.</strong></p>
-            <p className="publik-balance">
-              {purchaseLinks ? publikBalanceLine(publikInstall.balanceMicros, publikInstall.claimState) : publikInstall.balanceMicros === null ? '' : `${dollars(publikInstall.balanceMicros)} of publik usage available`}
-            </p>
-            <p className="microcopy">{purchaseLinks ? publikInstall.costSentence ?? PUBLIK_WHY_IT_COSTS : NO_LINK_PLAN_TEXT}</p>
+            <PlanUseMeter usage={usageFromBalance(publikInstall.balanceMicros, publikInstall.claimState)} className="publik-balance" />
+            <p className="microcopy">{purchaseLinks ? PUBLIK_PLAN_SENTENCE : `${PUBLIK_PLAN_SENTENCE} ${NO_LINK_PLAN_TEXT}`}</p>
             <p className="microcopy">{PUBLIK_DATA_PATH}</p>
             {purchaseLinks && publikInstall.claimUrl && (
               <button className="cta" onClick={() => void Browser.open({ url: publikInstall.claimUrl as string })}>
@@ -1631,16 +1627,10 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         ) : provider === 'publik' ? (
           <div className="card ai-setup-card">
             <p className="microcopy"><strong>Lunara AI uses publik API.</strong></p>
-            {purchaseLinks ? (
-              <p className="microcopy">
-                <strong>Cost.</strong> {PUBLIK_WHY_IT_COSTS} {PUBLIK_STARTS_AT_ZERO} Most people spend
-                under $2 a month after that.
-              </p>
-            ) : (
-              <p className="microcopy">
-                <strong>Plan.</strong> {NO_LINK_PLAN_TEXT}
-              </p>
-            )}
+            <p className="microcopy">
+              <strong>Plan.</strong> {PUBLIK_PLAN_SENTENCE}
+              {purchaseLinks ? '' : ` ${NO_LINK_PLAN_TEXT}`}
+            </p>
             <p className="microcopy">
               <strong>Where your messages go.</strong> {PUBLIK_DATA_PATH}
             </p>

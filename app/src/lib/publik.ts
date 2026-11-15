@@ -67,6 +67,7 @@ import {
   publikModelsFrom,
   publikUnreachable,
   publikUrl,
+  withoutMoney,
   type PublikClaimState,
   type PublikEndpoint,
   type PublikUsage,
@@ -80,7 +81,7 @@ type FetchLike = typeof fetch
 
 export const APP_SLUG = "lunara"
 /** Mirrors app/package.json `version` and PUBLIK_BUILD.appVersion; publikBuild.test.ts pins all three equal. */
-export const APP_VERSION = "0.2.3"
+export const APP_VERSION = "0.2.4"
 /** Lunara AI (adults only) calls a model, so the gate asks how to pay for it. */
 export const USES_AI = true
 const PUBLIK_ORIGIN = 'https://publikhq.com'
@@ -127,7 +128,7 @@ export interface PublikInstall {
   claimState: PublikClaimState
   /**
    * The starter grant from this mint: 0 for a new unlinked install and on a
-   * replay; $0.05 once per publik account when the mint is already bound to it.
+   * replay; the one-time starter grant (PUBLIK_LINK_STARTER_MICROS) when the mint is already bound to it.
    */
   starterMicros: number
   /** The live balance the gateway reported with the mint. */
@@ -555,7 +556,7 @@ export async function provision(options: { fetchImpl?: FetchLike; fresh?: boolea
     if (response.status === 403 && existingId && !options.fresh) return provision({ fetchImpl, fresh: true })
     // A wrong app token or body: say what publik said ("This app token is not valid.").
     if (response.status === 400 || response.status === 401 || response.status === 404) {
-      throw new PublikApiError('rejected', serverMessage || `publik could not set up this phone (${response.status}).`)
+      throw new PublikApiError('rejected', withoutMoney(serverMessage) ?? `publik could not set up this phone (${response.status}).`)
     }
     throw error
   }
@@ -655,7 +656,9 @@ export interface PublikWallet extends PublikUsage {
   topUpUrl: string | null
 }
 
-/** GET /api/v1/wallet for Lunara AI's balance line, on the base_url POST /installs announced. */
+const percentOrNull = (value: unknown): number | null => (typeof value === 'number' && Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : null)
+
+/** GET /api/v1/wallet for Lunara AI's plan-use line, on the base_url POST /installs announced. */
 export async function fetchPublikWallet(fetchImpl: FetchLike = providerFetch): Promise<PublikWallet> {
   const key = await readKey()
   if (!key) throw new PublikApiError('disconnected', 'publik API is not connected on this phone.')
@@ -664,7 +667,7 @@ export async function fetchPublikWallet(fetchImpl: FetchLike = providerFetch): P
   try {
     result = await walletRequest(`${endpoint.baseUrl}/wallet`, key, fetchImpl, WALLET_TIMEOUT_MS)
   } catch {
-    throw new PublikApiError('unreachable', 'publik API is unreachable right now. Nothing is being charged.')
+    throw new PublikApiError('unreachable', 'publik API is unreachable right now. Nothing is used from your plan.')
   }
   if (result.status < 200 || result.status >= 300) {
     throw await publikErrorFrom(new Response(JSON.stringify(result.body), { status: result.status }))
@@ -679,6 +682,9 @@ export async function fetchPublikWallet(fetchImpl: FetchLike = providerFetch): P
     available_micros?: number
     week?: { used_micros?: number; budget_micros?: number | null; resets_at?: string }
     starter?: { remaining_micros?: number } | null
+    used_percent?: number | null
+    remaining_percent?: number | null
+    resets_at?: string | null
   }
   const claimState: PublikClaimState | null =
     data.claim_state === 'claimed' || data.claim_state === 'anonymous' ? data.claim_state : null
@@ -700,6 +706,10 @@ export async function fetchPublikWallet(fetchImpl: FetchLike = providerFetch): P
     starterRemainingMicros: data.starter?.remaining_micros ?? null,
     claimState,
     chargeMicros: null,
+    // The plan use as a percent (the app shows no amount of money): publik's own numbers when it sends them.
+    usedPercent: percentOrNull(data.used_percent),
+    remainingPercent: percentOrNull(data.remaining_percent),
+    resetsAt: typeof data.resets_at === 'string' && data.resets_at ? data.resets_at : null,
     claimUrl,
     topUpUrl: trustedUrl(data.top_up_url) ?? claimUrl,
   }
@@ -789,7 +799,8 @@ export function disconnectPublik(fetchImpl: FetchLike = providerFetch, options: 
 
 /** The words of the gate. The same in every publik module. */
 export function gateScreen(id: GateScreen['id'], w: Wallet | null, note: string | null = null, message?: string): GateScreen {
-  if (id === 'unreachable') return { id, title: 'Sign in with publik', body: message ?? 'publik is not reachable. Check your connection.', note, buttons: [{ action: 'retry', label: 'Retry' }] }
+  // A server message never shows an amount of money (lib/publikApi.ts withoutMoney).
+  if (id === 'unreachable') return { id, title: 'Sign in with publik', body: withoutMoney(message) ?? 'publik is not reachable. Check your connection.', note, buttons: [{ action: 'retry', label: 'Retry' }] }
   if (id === 'sign_in') return { id, title: 'Sign in with publik', note, buttons: [{ action: 'sign_in', label: 'Sign in with publik' }],
     body: 'This app uses your publik account. Click Sign in with publik, then sign in in your browser. This window continues when you are signed in.' }
   // No handle and no balance: the plan screen can show before the PIN lock.
@@ -951,6 +962,9 @@ export async function needsSignInOnDemand(): Promise<boolean> {
 // The US-storefront "Get a plan" and top-up links (lib/storefront.ts) stay on the normal site.
 // The test hook (PUBLIK_API_BASE_URL) moves all three to its origin.
 
+/** The note when publik gave no claim_url: the app opens no other page instead. */
+export const NO_SIGN_IN_LINK = 'publik sent no sign-in link. Try again.'
+
 /** The sign-in page for the in-app sheet: claim_url with in_app=1. Every other query value stays as it is. */
 export function inAppClaimUrl(claimUrl: string): string {
   try {
@@ -1040,7 +1054,12 @@ async function gateLoop(ui: GateUI, notNow: boolean): Promise<GateResult | null>
       if (w.claim_state !== 'claimed') {
         const a = await ask(ui, offer(gateScreen('sign_in', w, signNote)), c.key, signPoll ? (x) => x.claim_state === 'claimed' : undefined)
         if (a === 'not_now') return null
-        if (a === 'sign_in') { ui.openUrl(inAppClaimUrl(w.claim_url ?? c.claim_url ?? `${origin()}/wallet`)); signNote = 'Waiting for you to sign in in your browser.'; signPoll = true }
+        if (a === 'sign_in') {
+          // Only publik's sign-in link, never another publik page: without one, say so and wait for another try.
+          const link = w.claim_url ?? c.claim_url
+          if (link) { ui.openUrl(inAppClaimUrl(link)); signNote = 'Waiting for you to sign in in your browser.'; signPoll = true }
+          else { signNote = NO_SIGN_IN_LINK; signPoll = false }
+        }
         if (a === 'timeout') { signNote = 'No sign-in after 10 minutes. Click Sign in with publik to try again.'; signPoll = false }
         if (a === 'done') closeBrowser()
         continue

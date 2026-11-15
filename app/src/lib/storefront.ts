@@ -13,10 +13,7 @@ import { isNative, nativePlatform } from '../native/runtime'
  * "Connect your plan" and "Use my own key" stay on every storefront. Until the
  * storefront is read, the answer is "no links" (the safe side).
  */
-export const NO_LINK_PLAN_TEXT = 'To get a plan, search for "publik" on Google.'
-
-/** The 402 text where purchase links are not allowed. */
-export const NO_LINK_NEEDS_CREDIT_TEXT = `Not enough publik balance for this request. ${NO_LINK_PLAN_TEXT} Then try again, or use your own key.`
+export { NO_LINK_PLAN_TEXT } from './publikApi'
 
 /** ISO 3166-1 alpha-3, as StoreKit gives it. */
 const US_STOREFRONT = 'USA'

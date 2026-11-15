@@ -44,24 +44,23 @@ import {
 import {
   DEFAULT_PUBLIK_MODEL,
   disconnectPublik,
-  dollars,
   fetchPublikWallet,
   hasPublikKey,
   markPublikCardSeen,
   provisionPublik,
   PUBLIK_BUILD,
   PUBLIK_DATA_PATH,
-  PUBLIK_LINK_STARTER_MICROS,
   PUBLIK_MODELS,
-  PUBLIK_STARTS_AT_ZERO,
-  PUBLIK_WHY_IT_COSTS,
+  PUBLIK_PLAN_SENTENCE,
+  notLinkedText,
+  planLimitText,
+  planUseFrom,
   publikAvailable,
-  publikBalanceLine,
   publikEndpoint,
   publikLinkButtonLabel,
   publikLocalState,
   publikStatusLine,
-  publikStatusLineNoLinks,
+  usageFromBalance,
   PublikApiError,
   resolveProvider,
   setChoice,
@@ -76,7 +75,8 @@ import {
   secureVaultStatus,
   setSecureSecret,
 } from '../native/secureVault'
-import { NO_LINK_NEEDS_CREDIT_TEXT, NO_LINK_PLAN_TEXT } from '../lib/storefront'
+import { NO_LINK_PLAN_TEXT } from '../lib/storefront'
+import { PlanUseMeter } from './PlanUseMeter'
 import { useApp } from '../state/appStore'
 import { LunaraMark } from './LunaraMark'
 import { usePurchaseLinks } from './usePurchaseLinks'
@@ -113,12 +113,11 @@ function openPublikLink(url: string) {
   void Browser.open({ url })
 }
 
-/** What the first-run card (CONTRACT §12.1) shows: the real balance plus the justification. */
+/** What the first-run card (CONTRACT §12.1) shows: the plan use (a percent, never money) and how AI is paid for. */
 interface PublikCard {
   balanceMicros: number | null
   claimState: PublikClaimState | null
   claimUrl: string | null
-  costSentence: string
 }
 
 export function AssistantScreen() {
@@ -148,8 +147,6 @@ export function AssistantScreen() {
   const [publikEndpointState, setPublikEndpointState] = useState<PublikEndpoint | null>(null)
   const [claimUrl, setClaimUrl] = useState<string | null>(null)
   const [claimState, setClaimState] = useState<PublikClaimState | null>(null)
-  const [starterMicros, setStarterMicros] = useState<number | null>(null)
-  const [costSentence, setCostSentence] = useState(PUBLIK_WHY_IT_COSTS)
   const [publikCard, setPublikCard] = useState<PublikCard | null>(null)
   // "AI chat is optional" (lib/healthConsent.ts): nothing goes to a provider before "Turn on AI chat".
   // `text` is the message that waits for the answer (null: the screen came when AI chat opened).
@@ -240,8 +237,6 @@ export function AssistantScreen() {
       setPublikEndpointState(endpoint)
       setClaimUrl(local.claimUrl)
       setClaimState(local.claimState)
-      setStarterMicros(local.starterMicros)
-      if (local.costSentence) setCostSentence(local.costSentence)
       setProvider(nextProvider)
       setModel(savedModel || defaultModel(nextProvider))
       setBaseUrl(savedBaseUrl || '')
@@ -261,7 +256,6 @@ export function AssistantScreen() {
             balanceMicros: local.starterMicros,
             claimState: local.claimState,
             claimUrl: local.claimUrl,
-            costSentence: local.costSentence ?? PUBLIK_WHY_IT_COSTS,
           })
         }
         void refreshWallet().then((wallet) => {
@@ -337,8 +331,6 @@ export function AssistantScreen() {
       setPublikEndpointState(install.endpoint)
       setClaimUrl(install.claimUrl)
       setClaimState(install.claimState)
-      if (install.starterMicros > 0) setStarterMicros(install.starterMicros)
-      if (install.costSentence) setCostSentence(install.costSentence)
       await Promise.all([
         setSetting(SK.aiProvider, 'publik'),
         setSetting(SK.aiModel, PUBLIK_MODELS.some((m) => m.id === model) ? model : DEFAULT_PUBLIK_MODEL),
@@ -351,7 +343,6 @@ export function AssistantScreen() {
         balanceMicros: install.balanceMicros,
         claimState: install.claimState,
         claimUrl: install.claimUrl,
-        costSentence: install.costSentence ?? PUBLIK_WHY_IT_COSTS,
       })
       return key
     } catch (reason) {
@@ -457,7 +448,6 @@ export function AssistantScreen() {
     setPublikCard(null)
     setClaimUrl(null)
     setClaimState(null)
-    setStarterMicros(null)
     setNotice(
       gateMode() === 'optional'
         ? 'publik API disconnected from this phone. Sign in again from Settings > publik or from Lunara AI.'
@@ -549,8 +539,9 @@ export function AssistantScreen() {
       }
       setMessages([...next, { role: 'assistant', content: reply.text }])
       if (reply.publik) {
-        setPublikUsage(reply.publik)
         if (reply.publik.claimState) setClaimState(reply.publik.claimState)
+        // The plan use comes from GET /wallet (percent and reset), not from the reply headers.
+        void refreshWallet()
       }
     } catch (reason) {
       if (reason instanceof PublikApiError) setPublikError(reason)
@@ -597,7 +588,13 @@ export function AssistantScreen() {
 
   const publikErrorBlock = publikError && (
     <div className="assistant-error" role="alert">
-      <span>{!purchaseLinks && publikError.kind === 'needs_credit' ? NO_LINK_NEEDS_CREDIT_TEXT : publikError.message}</span>
+      <span>
+        {publikError.planLimit
+          ? planLimitText(publikError.resetsAt ?? planUseFrom(publikUsage)?.resetsAt ?? null, purchaseLinks)
+          : !purchaseLinks && publikError.kind === 'needs_credit'
+            ? notLinkedText(false)
+            : publikError.message}
+      </span>
       <div className="assistant-error-actions">
         {(() => {
           const action = publikErrorAction(publikError)
@@ -703,14 +700,10 @@ export function AssistantScreen() {
           <section className="assistant-setup-intro">
             <p className="eyebrow">publik API</p>
             <h3>Lunara AI is ready</h3>
-            <p className="publik-balance">
-              {purchaseLinks
-                ? publikBalanceLine(publikCard.balanceMicros, publikCard.claimState)
-                : publikCard.balanceMicros === null ? '' : `${dollars(publikCard.balanceMicros)} of publik usage available`}
-            </p>
+            <PlanUseMeter usage={publikUsage ?? usageFromBalance(publikCard.balanceMicros, publikCard.claimState)} className="publik-balance" />
           </section>
           <section className="card ai-setup-card">
-            <p className="microcopy">{purchaseLinks ? publikCard.costSentence : NO_LINK_PLAN_TEXT}</p>
+            <p className="microcopy">{purchaseLinks ? PUBLIK_PLAN_SENTENCE : `${PUBLIK_PLAN_SENTENCE} ${NO_LINK_PLAN_TEXT}`}</p>
             <p className="microcopy">{PUBLIK_DATA_PATH}</p>
           </section>
           {purchaseLinks && publikCard.claimUrl && (
@@ -741,7 +734,7 @@ export function AssistantScreen() {
                   <span className="choice-icon">◐</span>
                   <span>
                     <strong>publik API</strong>
-                    <small>{apiKey && provider === 'publik' ? (purchaseLinks ? publikStatusLine(publikUsage) : publikStatusLineNoLinks(publikUsage)) : purchaseLinks ? `No key needed · link once for ${dollars(PUBLIK_LINK_STARTER_MICROS)} of free use` : 'No key needed · uses your publik plan'}</small>
+                    <small>{apiKey && provider === 'publik' ? publikStatusLine(publikUsage) : 'No key needed · uses your publik plan'}</small>
                   </span>
                 </button>
               )}
@@ -779,18 +772,11 @@ export function AssistantScreen() {
                     ))}
                   </select>
                 </div>
-                {apiKey && <p className="microcopy"><strong>{(purchaseLinks ? publikStatusLine(publikUsage) : publikStatusLineNoLinks(publikUsage))}</strong></p>}
-                {purchaseLinks ? (
-                  <p className="microcopy">
-                    <strong>Cost.</strong> {costSentence}
-                    {!apiKey && starterMicros === null && costSentence === PUBLIK_WHY_IT_COSTS ? ` ${PUBLIK_STARTS_AT_ZERO}` : ''}
-                    {starterMicros !== null ? ` This phone came with ${dollars(starterMicros)} of free use.` : ''}
-                  </p>
-                ) : (
-                  <p className="microcopy">
-                    <strong>Plan.</strong> {NO_LINK_PLAN_TEXT}
-                  </p>
-                )}
+                {apiKey && <PlanUseMeter usage={publikUsage} className="microcopy" />}
+                <p className="microcopy">
+                  <strong>Plan.</strong> {PUBLIK_PLAN_SENTENCE}
+                  {purchaseLinks ? '' : ` ${NO_LINK_PLAN_TEXT}`}
+                </p>
                 <p className="microcopy">
                   <strong>Where your messages go.</strong> {PUBLIK_DATA_PATH}
                 </p>
@@ -801,7 +787,7 @@ export function AssistantScreen() {
                 )}
                 {purchaseLinks ? (
                   <a className="microcopy" href="https://publikhq.com/developers#why" target="_blank" rel="noreferrer">
-                    How pricing works · publik API terms
+                    publik API terms
                   </a>
                 ) : (
                   <p className="microcopy">publik API terms apply.</p>
@@ -954,7 +940,7 @@ export function AssistantScreen() {
               </svg>
             </button>
             {provider === 'publik' && publikUsage && (
-              <p className="assistant-publik-line">{(purchaseLinks ? publikStatusLine(publikUsage) : publikStatusLineNoLinks(publikUsage))}</p>
+              <PlanUseMeter usage={publikUsage} className="assistant-publik-line" />
             )}
 
             {contextOpen && (

@@ -3386,6 +3386,16 @@ button.card:active {
   transition: width 420ms var(--ease-out);
 }
 
+/* publik plan use (components/PlanUseMeter.tsx): a percent and a bar, never money. */
+.plan-use-line {
+  margin: 0;
+}
+
+.plan-use-track {
+  height: 6px;
+  margin-top: 6px;
+}
+
 .step-count {
   color: var(--ink-500);
   font-family: var(--font-display);

@@ -167,7 +167,7 @@ describe('provisionPublik (CONTRACT §3.2)', () => {
     const body = JSON.parse(String(calls[0].init?.body))
     expect(body.app_token).toBe(build.token)
     expect(body.app_slug).toBe('lunara')
-    expect(body.app_version).toBe('0.2.3') // APP_VERSION, the module's literal
+    expect(body.app_version).toBe('0.2.4') // APP_VERSION, the module's literal
     expect(body.os).toBe('ios')
     expect(body.arch).toBeNull()
     expect(body.device_name).toBe('iPhone')
@@ -293,7 +293,7 @@ describe('provisionPublik (CONTRACT §3.2)', () => {
     const fetchImpl = (async () => {
       throw new Error('Could not reach the AI provider. Check your network connection.')
     }) as unknown as typeof fetch
-    await expect(provisionPublik({ fetchImpl })).rejects.toMatchObject({ kind: 'unreachable', message: expect.stringContaining('Nothing is being charged') })
+    await expect(provisionPublik({ fetchImpl })).rejects.toMatchObject({ kind: 'unreachable', message: expect.stringContaining('Nothing is used from your plan') })
   })
 
   it('a 429 from the mint surfaces as rate_limited and writes nothing', async () => {

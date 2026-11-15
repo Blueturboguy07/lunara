@@ -294,7 +294,8 @@ describe('assistant transport', () => {
     const error = failure as PublikApiError
     expect(error.kind).toBe('needs_credit')
     expect(error.link).toBe('https://publikhq.com/claim/HK7F-2QWD')
-    expect(error.message).toContain('pick a plan')
+    // The app's own words, never the server's (a server text could name an amount of money).
+    expect(error.message).toBe('This phone is not linked to a publik plan yet. Link it at the link below, or use your own key.')
   })
 
   it('a fetch that throws on publik becomes unreachable; on openai the original error propagates', async () => {

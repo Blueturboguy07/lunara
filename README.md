@@ -93,12 +93,15 @@ iOS and Android projects. **Re-run it after every code change** — the native
 shells load a copied bundle, not your live source.
 
 **AI assistant.** Lunara AI runs on **publik API** by default: no key needed.
-A new phone starts at $0.00 and no card is asked for; linking your publik
-account gives $0.05 of free use, once, and after that every request is priced
-per use at 50% of the model's published list price from your publik balance —
-the AI model behind it is run by a provider that charges per use, publik passes
-that on at half list, nothing is charged behind your back, and every call is
-visible on your publik dashboard. AI chat is optional and asks before it sends
+It uses your publik plan. The app never shows an amount of money for AI use.
+It shows only the share of the plan limit you used, with a bar, for example
+"62% of your plan used · resets Monday" (from `used_percent`,
+`remaining_percent` and `resets_at` of `GET /api/v1/wallet`, else from the
+week's used and limit values). When publik gives no limit, it shows "Plan
+active" or "Plan limit reached" with no number. When the limit is reached, AI
+chat says so in plain words, says when the plan resets, and offers "Use my own
+key" (`app/src/lib/publikApi.ts`; `app/src/lib/noMoneyShown.test.ts` fails when
+an app file has "$" followed by a digit). AI chat is optional and asks before it sends
 anything. Then your question, the earlier messages in the chat and an anonymized
 summary of the tracker categories you tick go through publik's servers to the AI
 provider. publik does not store the content of your messages or answers, and
@@ -192,12 +195,10 @@ When it is on, answers come from one of three places:
 
 - **publik API** (default) — no key needed. The app mints its own per-phone
   key from publik on first launch, after you accept the disclosure, and keeps
-  it in the iOS Keychain / Android Keystore. A new phone starts at $0.00: link
-  it at the claim link and your publik account gives $0.05 of free use, once;
-  then pick a plan or add a pack, and usage is priced per use from your publik
-  balance. Until the phone is linked (or you add your own key), the assistant
-  says there is no balance and shows the link. Disconnect at any time from
-  Settings.
+  it in the iOS Keychain / Android Keystore. AI use counts against your publik
+  plan and shows as a percent of the plan limit, never as money. Until the
+  phone is linked (or you add your own key), the assistant says that the phone
+  is not linked to a publik plan yet. Disconnect at any time from Settings.
 - **Anthropic** — your own API key, or (not in the iOS app, which is an App
   Store build) a token from `claude setup-token` to bill answers to a Claude
   subscription.

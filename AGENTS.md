@@ -5,7 +5,9 @@
 - Models: publik-fast, publik-balanced, publik-smart only; never a vendor model name
 - Key: per-install `pk_` from POST /installs, stored in the iOS Keychain / Android Keystore vault (`publik-api-key`), never in the cycle database or a backup; the test-build-only launch value PUBLIK_API_BASE_URL points the app at a fake publik on 127.0.0.1, localhost or 10.0.2.2
 - App token: VITE_PUBLIK_APP_TOKEN at build time (CI and release.yml: the PUBLIK_APP_TOKEN repo secret; the workflows fail when it is empty). `PUBLIK_DEV_APP_TOKEN` in `app/src/lib/publikBuild.ts` is a real token, the fallback for development and test builds only
-- 402: show error.message plus error.top_up_url only, and only on the US App Store storefront (below)
+- No amount of money for AI use anywhere in the app (founder rule, Nov 14 2026): AI use shows only as a percent of the plan limit with a bar (`publikStatusLine` / `PlanUseMeter`), or "Plan active" / "Plan limit reached". Never show a server text that names money (`withoutMoney`). `app/src/lib/noMoneyShown.test.ts` fails when an app file has "$" followed by a digit.
+- 402 / plan limit: the app's own words (`planLimitText`: limit reached, when it resets, the storefront rule, "use your own key") plus error.top_up_url only on the US App Store storefront (below)
+- When publik sends no claim_url, open nothing: show "publik sent no sign-in link. Try again."
 - Never print or log a key
 - Docs: https://publikhq.com/llms.txt, https://publikhq.com/developers, https://publikhq.com/skills/api.md
 

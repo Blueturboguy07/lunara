@@ -20,11 +20,11 @@ import {
 } from '../db/schema'
 import type { Envelope } from '../crypto/vault'
 import { applyImport, collectExport, decryptImport, encryptedExport, shareOrDownload } from '../db/transfer'
+import { PlanUseMeter } from '../components/PlanUseMeter'
 import { signInWithPublik } from '../components/PublikGate'
 import { pushBackup, restoreBackup } from '../lib/backup'
 import { DATA_STAYS_ON_PHONE } from '../lib/healthConsent'
 import { gateMode } from '../lib/buildFlags'
-import { loadStorefront, purchaseLinksAllowed } from '../lib/storefront'
 import { localToday } from '../lib/dates'
 import {
   accountDeletionUrl,
@@ -35,8 +35,7 @@ import {
   hasPublikKey,
   isAdultBirthYear,
   signedInHere,
-  publikStatusLine,
-  publikStatusLineNoLinks,
+  type PublikUsage,
   setChoice,
   setUsageCounting,
   usageCountingOn,
@@ -168,7 +167,7 @@ export function Settings() {
   const [hasOpenAiKey, setHasOpenAiKey] = useState(false)
   const [hasAnthropicKey, setHasAnthropicKey] = useState(false)
   const [hasPublik, setHasPublik] = useState(false)
-  const [publikLine, setPublikLine] = useState('Ready')
+  const [publikUsage, setPublikUsage] = useState<PublikUsage | null>(null)
   const [usageOn, setUsageOn] = useState(true)
   const [signedIn, setSignedIn] = useState(false)
   // Sign-out, Disconnect and Delete account show this while they run (the phone forgets first, then tells publik).
@@ -205,10 +204,10 @@ export function Settings() {
         setHasAnthropicKey(Boolean(anthropicKey))
         setHasPublik(publikKey)
         if (publikKey) {
-          void Promise.all([fetchPublikWallet(), loadStorefront()])
-            .then(([wallet]) => {
-              // Outside the US App Store storefront: the balance only, no link and no offer (lib/storefront.ts).
-              if (alive) setPublikLine(purchaseLinksAllowed() ? publikStatusLine(wallet) : publikStatusLineNoLinks(wallet))
+          void fetchPublikWallet()
+            .then((wallet) => {
+              // The plan use as a percent, never an amount of money (components/PlanUseMeter.tsx).
+              if (alive) setPublikUsage(wallet)
             })
             .catch(() => undefined)
         }
@@ -571,7 +570,7 @@ export function Settings() {
     }
     setHasPublik(false)
     setSignedIn(false)
-    setPublikLine('Ready')
+    setPublikUsage(null)
     setStatus(done)
     return true
   }
@@ -1225,7 +1224,7 @@ export function Settings() {
             <span className="muted">
               {s.provider === 'publik'
                 ? hasPublik
-                  ? `publik API · ${publikLine} ›`
+                  ? 'publik API ›'
                   : 'connect publik API ›'
                 : s.provider === 'anthropic'
                   ? hasAnthropicKey
@@ -1236,6 +1235,7 @@ export function Settings() {
                     : 'add OpenAI key ›'}
             </span>
           </button>
+          {s.provider === 'publik' && hasPublik && <PlanUseMeter usage={publikUsage} className="microcopy" />}
           {(s.provider === 'publik' ? hasPublik : s.provider === 'anthropic' ? hasAnthropicKey : hasOpenAiKey) && (
             <button className="setting-row" onClick={removeAiKey} disabled={publikBusy}>
               <span>{s.provider === 'publik' ? 'Disconnect publik API' : 'Remove saved credential'}</span>

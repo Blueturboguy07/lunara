@@ -68,7 +68,7 @@ vi.mock('../db/schema', () => {
 vi.mock('./publikBuild', () => ({
   PUBLIK_BUILD: {
     appSlug: 'lunara',
-    appVersion: '0.2.3',
+    appVersion: '0.2.4',
     appToken: 'pat_lunara_' + 'g'.repeat(32),
     baseUrl: 'https://publikhq.com/api/v1',
     disclosureVersion: 3,
@@ -122,6 +122,8 @@ const net = vi.hoisted(() => ({
   wallets: [] as Wallet[],
   walletStatus: 200,
   installsStatus: 201,
+  // true: publik sends no claim_url (POST /installs and GET /wallet).
+  noClaimUrl: false,
   revokedKey: '',
   calls: [] as Array<{ url: string; method: string; auth: string | null; body: string | null }>,
   atRevoke: null as null | { vaultKey: boolean; settings: string[]; healthConsent: string | undefined },
@@ -137,12 +139,12 @@ vi.mock('./providerFetch', () => ({
     if (url.endsWith('/api/v1/installs')) {
       if (net.installsStatus !== 201) return json(net.installsStatus, { error: { type: 'invalid_app_token', message: 'This app token is not valid.' } })
       const sent = JSON.parse(String(init?.body)) as { install_id: string }
-      return json(201, { key: 'pk_live_gatetest', install_id: sent.install_id, claim_url: `${base}/claim/abc`, claim_state: 'anonymous', base_url: `${base}/api/v1`, balance_micros: 0 })
+      return json(201, { key: 'pk_live_gatetest', install_id: sent.install_id, claim_url: net.noClaimUrl ? null : `${base}/claim/abc`, claim_state: 'anonymous', base_url: `${base}/api/v1`, balance_micros: 0 })
     }
     if (url.endsWith('/api/v1/wallet')) {
       if (net.walletStatus !== 200 || headers.get('authorization') === `Bearer ${net.revokedKey}`) return json(net.walletStatus !== 200 ? net.walletStatus : 401, { error: { type: 'invalid_key', message: 'This key is not valid.' } })
       const w = net.wallets.length > 1 ? net.wallets.shift()! : net.wallets[0]!
-      return json(200, { plan: { kind: 'none', label: null }, balance_micros: 0, account: null, ...w, claim_url: `${base}/claim/abc`, top_up_url: `${base}/wallet?top_up=1`, linked_at: null })
+      return json(200, { plan: { kind: 'none', label: null }, balance_micros: 0, account: null, ...w, claim_url: net.noClaimUrl ? null : `${base}/claim/abc`, top_up_url: `${base}/wallet?top_up=1`, linked_at: null })
     }
     if (url.endsWith('/api/v1/telemetry')) return new Response(null, { status: 204 })
     if (url.endsWith('/api/v1/installs/revoke')) {
@@ -167,6 +169,7 @@ import {
   ensureSignedIn,
   gateScreen,
   inAppClaimUrl,
+  NO_SIGN_IN_LINK,
   loadLaunchOptions,
   needsSignInOnDemand,
   onPublikSignOut,
@@ -236,6 +239,7 @@ beforeEach(() => {
   net.wallets = [anonymous]
   net.walletStatus = 200
   net.installsStatus = 201
+  net.noClaimUrl = false
   net.revokedKey = ''
   net.calls = []
   net.atRevoke = null
@@ -338,7 +342,7 @@ describe('ensureSignedIn against a fake publik', () => {
     expect(events[0]!.auth).toBe('Bearer pk_live_gatetest')
     const first = JSON.parse(events[0]!.body!) as Record<string, unknown>
     expect(Object.keys(first).sort()).toEqual(['app', 'app_version', 'event', 'install_id', 'os', 'v'])
-    expect(first).toMatchObject({ v: 1, app: 'lunara', event: 'app_opened', app_version: '0.2.3', os: 'ios' })
+    expect(first).toMatchObject({ v: 1, app: 'lunara', event: 'app_opened', app_version: '0.2.4', os: 'ios' })
     expect(String(first.install_id)).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
     await vi.advanceTimersByTimeAsync(30 * 60_000)
     expect(JSON.parse(telemetryCalls()[1]!.body!)).toMatchObject({ event: 'active_session', install_id: first.install_id })
@@ -492,9 +496,9 @@ describe('the self-test and the test hook', () => {
     const { ui, screens } = scriptedUI()
     void ensureSignedIn(ui)
     await vi.advanceTimersByTimeAsync(1_000)
-    expect(native.selfTestLines).toEqual(['publik self-test: ok lunara 0.2.3'])
+    expect(native.selfTestLines).toEqual(['publik self-test: ok lunara 0.2.4'])
     expect(net.calls.map((c) => c.url)).toEqual(['https://publikhq.com/api/v1/installs', 'https://publikhq.com/api/v1/wallet'])
-    expect(JSON.parse(net.calls[0]!.body!)).toMatchObject({ app_slug: 'lunara', app_version: '0.2.3', os: 'ios' })
+    expect(JSON.parse(net.calls[0]!.body!)).toMatchObject({ app_slug: 'lunara', app_version: '0.2.4', os: 'ios' })
     expect(screens).toEqual([])
     log.mockRestore()
   })
@@ -694,7 +698,7 @@ describe('optional mode: no wall, sign-in on demand', () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
     void openWithoutWall()
     await vi.advanceTimersByTimeAsync(1_000)
-    expect(native.selfTestLines).toEqual(['publik self-test: ok lunara 0.2.3'])
+    expect(native.selfTestLines).toEqual(['publik self-test: ok lunara 0.2.4'])
     log.mockRestore()
   })
 })
@@ -713,6 +717,23 @@ describe('the in-app sheet opens only publik\'s bare in-app pages', () => {
     expect(publikPrivacyUrl()).toBe('https://publikhq.com/in-app/privacy')
     expect(accountDeletionUrl()).not.toContain('/settings/profile')
     expect(publikPrivacyUrl()).not.toMatch(/publikhq\.com\/privacy/)
+  })
+})
+
+describe('publik sent no sign-in link', () => {
+  it('opens no other page; says so and waits for another try', async () => {
+    net.noClaimUrl = true
+    net.wallets = [anonymous]
+    const { ui, screens, opened } = scriptedUI()
+    void ensureSignedIn(ui)
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(opened).toEqual([])
+    expect(NO_SIGN_IN_LINK).toBe('publik sent no sign-in link. Try again.')
+    expect(screens.map((s) => [s.title, s.note])).toEqual([
+      [WORDS.title, null],
+      [WORDS.title, 'publik sent no sign-in link. Try again.'],
+    ])
+    expect(screens.at(-1)!.buttons.map((b) => b.label)).toEqual(['Sign in with publik'])
   })
 })
 

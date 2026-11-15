@@ -86,7 +86,7 @@ describe('purchase links follow the App Store storefront', () => {
   it('the text outside the US names no price, no link and no button', async () => {
     const s = await freshStorefront()
     expect(s.NO_LINK_PLAN_TEXT).toBe('To get a plan, search for "publik" on Google.')
-    for (const text of [s.NO_LINK_PLAN_TEXT, s.NO_LINK_NEEDS_CREDIT_TEXT]) {
+    for (const text of [s.NO_LINK_PLAN_TEXT]) {
       expect(text).not.toMatch(/\$|https?:|publikhq\.com|top up|buy|price/i)
       expect(text).not.toContain('Get a plan') // the US button label
     }
