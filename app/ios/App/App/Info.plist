@@ -21,6 +21,8 @@
 	<string>Use Face ID to unlock your private Lunara data.</string>
 	<key>NSHealthShareUsageDescription</key>
 	<string>Lunara imports only the health categories you choose so your cycle history can stay current on this device.</string>
+	<key>NSHealthUpdateUsageDescription</key>
+	<string>Lunara never writes to Apple Health. It only reads the health categories you choose, so your cycle history stays current on this device.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Lunara connects to a device on your local network only when you enter that device's address as your AI service.</string>
 	<key>CAPACITOR_DEBUG</key>
