@@ -11,6 +11,12 @@
 #   subscription-token option) and both run the publik self-test in a
 #   simulator: the built app prints "publik self-test: ok lunara <version>"
 #   only after a real GET /wallet answers.
+#   ios-sim-app-store     the flags of the App Store build (LUNARA_RELEASE=1,
+#                         APP_STORE_BUILD=1, gate required, NO test hooks, the app
+#                         token from the secret, Xcode Release configuration with its
+#                         release check), arm64 simulator, ad-hoc signed. Blind tests
+#                         use this one: it shows what Apple sees (the simulator has no
+#                         storefront, so no purchase button and the Google sentence).
 #
 # These are TEST builds: the web bundle has PUBLIK_TEST_HOOKS=1, the APK
 # -PpublikTestHooks=true and the iOS app PUBLIK_TEST_HOOKS=YES. A release build
@@ -345,3 +351,133 @@ jobs:
         if: matrix.gate_mode == 'required'
         timeout-minutes: 8
         run: bash .github/scripts/ios-sheet-test.sh
+
+  # The App Store flags in a simulator app, for blind tests: what Apple's reviewer sees.
+  # No test hooks, so no self-test line; the job checks the flags, the signature and
+  # that the app starts and keeps running.
+  ios-store:
+    name: iOS simulator app (App Store flags, no test hooks)
+    runs-on: macos-15
+    timeout-minutes: 50
+    steps:
+      - name: Check the PUBLIK_APP_TOKEN secret
+        env:
+          PUBLIK_APP_TOKEN: ${{ secrets.PUBLIK_APP_TOKEN }}
+        run: |
+          if [ -z "$PUBLIK_APP_TOKEN" ]; then
+            echo "::error::The PUBLIK_APP_TOKEN secret is empty. Add it in Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@v4.2.2
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4.1.0
+        with:
+          version: "12.8.1"
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4.4.0
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The same web build as appstore-upload.yml: release, App Store build, gate required, no test hooks.
+      - name: Build web bundle (release, App Store build, gate required, no test hooks)
+        working-directory: app
+        env:
+          VITE_PUBLIK_APP_TOKEN: ${{ secrets.PUBLIK_APP_TOKEN }}
+          LUNARA_RELEASE: "1"
+          APP_STORE_BUILD: "1"
+          PUBLIK_GATE_MODE: required
+        run: |
+          pnpm build:native
+          npx cap sync ios
+          echo "Web bundle: $(cat ios/App/App/public/lunara-build.json)"
+
+      # Release configuration: the Xcode release check (scripts/check-release-build.sh) runs
+      # and refuses test hooks, the dev token and an optional gate, as for the App Store.
+      - name: Build arm64 simulator app (Release, no test hooks) and sign it ad hoc
+        working-directory: app/ios/App
+        run: |
+          xcodebuild -version
+          xcodebuild \
+            -project App.xcodeproj \
+            -scheme App \
+            -configuration Release \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/dd" \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
+            PUBLIK_TEST_HOOKS=NO \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            -quiet build
+          APP="$RUNNER_TEMP/dd/Build/Products/Release-iphonesimulator/App.app"
+          echo "APP=$APP" >> "$GITHUB_ENV"
+          INFO="$APP/public/lunara-build.json"
+          echo "Built bundle: $(cat "$INFO")"
+          grep -q '"testHooks":false' "$INFO"
+          grep -q '"claudeTokenOnIos":false' "$INFO"
+          grep -q '"gateMode":"required"' "$INFO"
+          grep -q '"appToken":"env"' "$INFO"
+          # Ad-hoc signature: the parts inside first (frameworks, libraries, the widget), then the app.
+          find "$APP" -depth \( -name '*.framework' -o -name '*.dylib' -o -name '*.appex' \) -print0 |
+            while IFS= read -r -d '' part; do codesign --force --sign - --timestamp=none "$part"; done
+          codesign --force --sign - --timestamp=none "$APP"
+          codesign --verify --deep --strict "$APP"
+          codesign -dv "$APP" 2>&1 | grep -E '^(Identifier|Signature)='
+          echo "Architectures: $(lipo -archs "$APP/App")"
+          echo "Version: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist") ($(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist"))"
+          test -f "$APP/PrivacyInfo.xcprivacy"
+          test -f "$APP/PlugIns/LunaraWidgetExtension.appex/PrivacyInfo.xcprivacy"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")" = "$(node -p "require('../../package.json').version")"
+
+      - name: Zip the simulator app
+        run: |
+          ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/Lunara-iphonesimulator-arm64-app-store.zip"
+          ls -l "$RUNNER_TEMP/Lunara-iphonesimulator-arm64-app-store.zip"
+
+      - name: Upload simulator app
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: ios-sim-app-store
+          path: ${{ runner.temp }}/Lunara-iphonesimulator-arm64-app-store.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: The app starts in the simulator and keeps running
+        run: |
+          set -euo pipefail
+          UDID=$(xcrun simctl list devices available --json | python3 -c '
+          import json, sys
+          devices = json.load(sys.stdin)["devices"]
+          for runtime in sorted(devices, reverse=True):
+              if "iOS" not in runtime:
+                  continue
+              for device in devices[runtime]:
+                  if device["name"].startswith("iPhone"):
+                      print(device["udid"])
+                      sys.exit(0)
+          sys.exit("no iPhone simulator")
+          ')
+          echo "Simulator: $UDID"
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+          xcrun simctl install "$UDID" "$APP"
+          SIMCTL_CHILD_DO_NOT_TRACK=1 xcrun simctl launch "$UDID" app.lunara.mobile
+          sleep 25
+          RUNNING=$(xcrun simctl spawn "$UDID" launchctl list || true)
+          if grep -q 'UIKitApplication:app.lunara.mobile' <<< "$RUNNING"; then
+            echo "The App Store-flag app is still running after 25 s."
+          else
+            echo "::error::The App Store-flag app stopped within 25 s of its start."
+            xcrun simctl spawn "$UDID" log show --last 2m --style compact --predicate 'process == "App"' 2>/dev/null |
+              sed -E 's/(pk|pat|pbt)_[A-Za-z0-9_-]{4,}/\1_[masked]/g; s/(Bearer )[^ "]+/\1[masked]/g' | tail -n 80 || true
+            exit 1
+          fi
+          xcrun simctl terminate "$UDID" app.lunara.mobile || true
