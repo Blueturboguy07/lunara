@@ -448,7 +448,8 @@ public final class LunaraNativePlugin: CAPPlugin, CAPBridgedPlugin {
             return
         }
 
-        healthStore.requestAuthorization(toShare: [], read: readTypes) { success, error in
+        // Read only: Lunara writes nothing to Apple Health, so it asks for no share types.
+        healthStore.requestAuthorization(toShare: nil, read: readTypes) { success, error in
             if let error {
                 DispatchQueue.main.async {
                     call.reject("HealthKit authorization could not be completed.", "HEALTH_AUTH_FAILED", error)
