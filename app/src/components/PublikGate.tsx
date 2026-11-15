@@ -19,8 +19,10 @@ import { LunaraMark } from './LunaraMark'
 
 /**
  * Sign in with publik. The words and the order of the screens come from the
- * publik module (lib/publik.ts); this file only draws them. Links open in the
- * system browser: SFSafariViewController on iOS, a Custom Tab on Android.
+ * publik module (lib/publik.ts); this file only draws them. Sign-in opens
+ * publik's bare in-app page (inAppClaimUrl in lib/publik.ts) in the in-app
+ * browser: SFSafariViewController on iOS, a Custom Tab on Android. The US
+ * "Get a plan" link opens the normal publik site there.
  *
  * PUBLIK_GATE_MODE (lib/buildFlags.ts):
  *   required (default)  <PublikGate> is a wall before onboarding, the PIN lock and the tabs.

@@ -8,8 +8,8 @@
  *     plan choice) lives in Lunara's settings table and never goes into a
  *     backup (db/transfer.ts). A browser build keeps the key in localStorage;
  *   - requests go through providerFetch (native HTTP on iOS and Android);
- *   - Sign in with publik opens claim_url in the system browser
- *     (SFSafariViewController on iOS, a Custom Tab on Android). While the app
+ *   - Sign in with publik opens claim_url with in_app=1 (publik's bare in-app page) in the
+ *     in-app browser (SFSafariViewController on iOS, a Custom Tab on Android). While the app
  *     is in the foreground it checks GET /wallet every 3 seconds; when the app
  *     comes back from the background, or the browser closes, it checks at once;
  *   - offline, a phone that signed in before goes straight in. Lunara is
@@ -80,7 +80,7 @@ type FetchLike = typeof fetch
 
 export const APP_SLUG = "lunara"
 /** Mirrors app/package.json `version` and PUBLIK_BUILD.appVersion; publikBuild.test.ts pins all three equal. */
-export const APP_VERSION = "0.2.2"
+export const APP_VERSION = "0.2.3"
 /** Lunara AI (adults only) calls a model, so the gate asks how to pay for it. */
 export const USES_AI = true
 const PUBLIK_ORIGIN = 'https://publikhq.com'
@@ -941,11 +941,39 @@ export async function needsSignInOnDemand(): Promise<boolean> {
   return !(await readCredential())?.choice
 }
 
-// ---------- account deletion (App Store 5.1.1(v)) ----------
+// ---------- the pages the in-app sheet opens ----------
+//
+// On iOS and Android the in-app sheet (@capacitor/browser) opens only publik's bare
+// "in-app" pages: no site navigation, no footer, no prices and no plan links.
+//   sign-in:          claim_url + in_app=1 (publik redirects to /in-app/claim/<CODE>)
+//   account deletion: /in-app/delete-account
+//   privacy policy:   /in-app/privacy
+// The US-storefront "Get a plan" and top-up links (lib/storefront.ts) stay on the normal site.
+// The test hook (PUBLIK_API_BASE_URL) moves all three to its origin.
 
-/** publik's page where the person deletes the publik account (for every publik app). The test hook moves it too. */
+/** The sign-in page for the in-app sheet: claim_url with in_app=1. Every other query value stays as it is. */
+export function inAppClaimUrl(claimUrl: string): string {
+  try {
+    const url = new URL(claimUrl)
+    if (url.searchParams.has('in_app')) {
+      url.searchParams.set('in_app', '1')
+      return url.toString()
+    }
+    url.search = url.search ? `${url.search}&in_app=1` : '?in_app=1'
+    return url.toString()
+  } catch {
+    return claimUrl
+  }
+}
+
+/** publik's page where the person deletes the publik account (for every publik app; App Store 5.1.1(v)). */
 export function accountDeletionUrl(): string {
-  return `${origin()}/settings/profile#delete-account-title`
+  return `${origin()}/in-app/delete-account`
+}
+
+/** publik's privacy policy. */
+export function publikPrivacyUrl(): string {
+  return `${origin()}/in-app/privacy`
 }
 
 /**
@@ -1012,7 +1040,7 @@ async function gateLoop(ui: GateUI, notNow: boolean): Promise<GateResult | null>
       if (w.claim_state !== 'claimed') {
         const a = await ask(ui, offer(gateScreen('sign_in', w, signNote)), c.key, signPoll ? (x) => x.claim_state === 'claimed' : undefined)
         if (a === 'not_now') return null
-        if (a === 'sign_in') { ui.openUrl(w.claim_url ?? c.claim_url ?? `${origin()}/wallet`); signNote = 'Waiting for you to sign in in your browser.'; signPoll = true }
+        if (a === 'sign_in') { ui.openUrl(inAppClaimUrl(w.claim_url ?? c.claim_url ?? `${origin()}/wallet`)); signNote = 'Waiting for you to sign in in your browser.'; signPoll = true }
         if (a === 'timeout') { signNote = 'No sign-in after 10 minutes. Click Sign in with publik to try again.'; signPoll = false }
         if (a === 'done') closeBrowser()
         continue

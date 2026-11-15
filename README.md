@@ -20,7 +20,8 @@ under the icon stays **Lunara**, because a home screen cuts a longer label short
 (`app/src/lib/appName.ts`). The bundle ID, the package and the URL scheme stay
 `app.lunara.mobile`.
 
-Lunara is an open-source alternative to Flo®. It is not affiliated with, endorsed by, or connected to Flo Health Inc.
+Lunara is an open-source cycle tracker that keeps your health data on your own
+phone. It has no ads, does not sell data, and you can read every line of its code.
 
 ## Why
 
@@ -226,8 +227,11 @@ no balance and reads nothing.
 ## Sign in with publik
 
 Lunara opens with **Sign in with publik**, before onboarding, the PIN lock and
-the tabs. The link opens in the system browser (Safari view on iPhone, a Custom
-Tab on Android). While Lunara is in the foreground it checks the sign-in every
+the tabs. The link opens publik's bare sign-in page in the in-app browser
+(Safari view on iPhone, a Custom Tab on Android): the app adds `in_app=1` to the
+`claim_url` from publik, and publik shows its in-app page with no site
+navigation, footer, prices or plan links. On iPhone the in-app browser closes by
+itself when the sign-in is done. While Lunara is in the foreground it checks the sign-in every
 3 seconds; it stops in the background and checks again at once when you come
 back. Then onboarding asks your age. After that, an adult picks **Get a plan**,
 **Connect your plan** or **Use my own key** (a person under 18 never sees this
@@ -296,8 +300,12 @@ fails when they differ.
 - **Delete account.** Settings → Danger zone → Delete account says what is
   deleted (the publik account, for all publik apps), deletes Lunara's publik
   data on this phone, asks separately before it deletes cycle data, then opens
-  publik's deletion page in the in-app browser. Settings → publik → Sign out
-  signs this phone out and keeps your data.
+  publik's in-app deletion page (`https://publikhq.com/in-app/delete-account`)
+  in the in-app browser. Settings → publik → Sign out signs this phone out and
+  keeps your data. Settings → publik → publik privacy policy opens
+  `https://publikhq.com/in-app/privacy` in the in-app browser. The in-app
+  browser opens only these in-app pages; the US-storefront "Get a plan" and
+  top-up links open the normal publik site.
 - **AI chat is optional.** Without AI chat, your health and cycle data stays
   on this phone (an encrypted backup, if you turn it on, sends a copy that the
   backup server cannot read). Before the first AI chat message to a provider,

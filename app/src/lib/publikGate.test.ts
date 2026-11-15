@@ -68,7 +68,7 @@ vi.mock('../db/schema', () => {
 vi.mock('./publikBuild', () => ({
   PUBLIK_BUILD: {
     appSlug: 'lunara',
-    appVersion: '0.2.2',
+    appVersion: '0.2.3',
     appToken: 'pat_lunara_' + 'g'.repeat(32),
     baseUrl: 'https://publikhq.com/api/v1',
     disclosureVersion: 3,
@@ -166,10 +166,12 @@ import {
   disconnectPublik,
   ensureSignedIn,
   gateScreen,
+  inAppClaimUrl,
   loadLaunchOptions,
   needsSignInOnDemand,
   onPublikSignOut,
   openWithoutWall,
+  publikPrivacyUrl,
   signedInHere,
   signInOnDemand,
   type GateAction,
@@ -323,7 +325,8 @@ describe('ensureSignedIn against a fake publik', () => {
       [WORDS.connectTitle, null],
     ])
     expect(screens[4]!.body).toBe('You are signed in to publik. You have a publik plan. Connect it to use AI in this app, or use your own key.')
-    expect(opened).toEqual(['https://publikhq.com/claim/abc', 'https://publikhq.com/wallet?top_up=1'])
+    // Sign-in opens publik's bare in-app page; the US "Get a plan" link stays on the normal site.
+    expect(opened).toEqual(['https://publikhq.com/claim/abc?in_app=1', 'https://publikhq.com/wallet?top_up=1'])
     expect(native.closed).toBe(2) // the in-app browser closes when publik says sign-in, then the plan, is done
     expect(gate).toMatchObject({ key: 'pk_live_gatetest', choice: 'publik', chosenNow: true, offline: false })
     expect(settings.store.get('publikChoice')).toBe('publik')
@@ -335,7 +338,7 @@ describe('ensureSignedIn against a fake publik', () => {
     expect(events[0]!.auth).toBe('Bearer pk_live_gatetest')
     const first = JSON.parse(events[0]!.body!) as Record<string, unknown>
     expect(Object.keys(first).sort()).toEqual(['app', 'app_version', 'event', 'install_id', 'os', 'v'])
-    expect(first).toMatchObject({ v: 1, app: 'lunara', event: 'app_opened', app_version: '0.2.2', os: 'ios' })
+    expect(first).toMatchObject({ v: 1, app: 'lunara', event: 'app_opened', app_version: '0.2.3', os: 'ios' })
     expect(String(first.install_id)).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
     await vi.advanceTimersByTimeAsync(30 * 60_000)
     expect(JSON.parse(telemetryCalls()[1]!.body!)).toMatchObject({ event: 'active_session', install_id: first.install_id })
@@ -489,9 +492,9 @@ describe('the self-test and the test hook', () => {
     const { ui, screens } = scriptedUI()
     void ensureSignedIn(ui)
     await vi.advanceTimersByTimeAsync(1_000)
-    expect(native.selfTestLines).toEqual(['publik self-test: ok lunara 0.2.2'])
+    expect(native.selfTestLines).toEqual(['publik self-test: ok lunara 0.2.3'])
     expect(net.calls.map((c) => c.url)).toEqual(['https://publikhq.com/api/v1/installs', 'https://publikhq.com/api/v1/wallet'])
-    expect(JSON.parse(net.calls[0]!.body!)).toMatchObject({ app_slug: 'lunara', app_version: '0.2.2', os: 'ios' })
+    expect(JSON.parse(net.calls[0]!.body!)).toMatchObject({ app_slug: 'lunara', app_version: '0.2.3', os: 'ios' })
     expect(screens).toEqual([])
     log.mockRestore()
   })
@@ -528,7 +531,7 @@ describe('the self-test and the test hook', () => {
     const run = ensureSignedIn(ui)
     await vi.advanceTimersByTimeAsync(10_000)
     await run
-    expect(opened).toEqual(['http://127.0.0.1:8787/claim/abc'])
+    expect(opened).toEqual(['http://127.0.0.1:8787/claim/abc?in_app=1'])
     expect(net.calls.length).toBeGreaterThan(3)
     expect(net.calls.every((c) => c.url.startsWith('http://127.0.0.1:8787/api/v1/'))).toBe(true)
     expect(telemetryCalls()).toHaveLength(1)
@@ -691,17 +694,36 @@ describe('optional mode: no wall, sign-in on demand', () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
     void openWithoutWall()
     await vi.advanceTimersByTimeAsync(1_000)
-    expect(native.selfTestLines).toEqual(['publik self-test: ok lunara 0.2.2'])
+    expect(native.selfTestLines).toEqual(['publik self-test: ok lunara 0.2.3'])
     log.mockRestore()
+  })
+})
+
+describe('the in-app sheet opens only publik\'s bare in-app pages', () => {
+  it('sign-in: claim_url with in_app=1; every other query value and the fragment stay', () => {
+    expect(inAppClaimUrl('https://publikhq.com/claim/abc')).toBe('https://publikhq.com/claim/abc?in_app=1')
+    expect(inAppClaimUrl('https://publikhq.com/claim/abc?app=lunara&ref=x%20y')).toBe('https://publikhq.com/claim/abc?app=lunara&ref=x%20y&in_app=1')
+    expect(inAppClaimUrl('https://publikhq.com/claim/abc?app=lunara#top')).toBe('https://publikhq.com/claim/abc?app=lunara&in_app=1#top')
+    expect(inAppClaimUrl('https://publikhq.com/claim/abc?in_app=0&app=lunara')).toBe('https://publikhq.com/claim/abc?in_app=1&app=lunara')
+    expect(inAppClaimUrl('https://publikhq.com/claim/abc?in_app=1')).toBe('https://publikhq.com/claim/abc?in_app=1')
+  })
+
+  it('account deletion and the privacy policy are the in-app pages, not the site pages', () => {
+    expect(accountDeletionUrl()).toBe('https://publikhq.com/in-app/delete-account')
+    expect(publikPrivacyUrl()).toBe('https://publikhq.com/in-app/privacy')
+    expect(accountDeletionUrl()).not.toContain('/settings/profile')
+    expect(publikPrivacyUrl()).not.toMatch(/publikhq\.com\/privacy/)
   })
 })
 
 describe('Delete account', () => {
   it('names publik\'s deletion page; the test hook moves it with every other call', async () => {
-    expect(accountDeletionUrl()).toBe('https://publikhq.com/settings/profile#delete-account-title')
+    expect(accountDeletionUrl()).toBe('https://publikhq.com/in-app/delete-account')
+    expect(publikPrivacyUrl()).toBe('https://publikhq.com/in-app/privacy')
     native.launch = { PUBLIK_API_BASE_URL: 'http://127.0.0.1:8787/api/v1' }
     await loadLaunchOptions()
-    expect(accountDeletionUrl()).toBe('http://127.0.0.1:8787/settings/profile#delete-account-title')
+    expect(accountDeletionUrl()).toBe('http://127.0.0.1:8787/in-app/delete-account')
+    expect(publikPrivacyUrl()).toBe('http://127.0.0.1:8787/in-app/privacy')
   })
 
   it('revokes the key and deletes the publik data on this phone, but not the cycle data or "Count my use: Off"', async () => {
@@ -745,7 +767,8 @@ describe('the test hooks work only in a test build', () => {
     _resetPublikForTests()
     native.launch = { PUBLIK_API_BASE_URL: 'http://127.0.0.1:8787/api/v1', PUBLIK_SELF_TEST: '1' }
     await loadLaunchOptions()
-    expect(accountDeletionUrl()).toBe('https://publikhq.com/settings/profile#delete-account-title')
+    expect(accountDeletionUrl()).toBe('https://publikhq.com/in-app/delete-account')
+    expect(publikPrivacyUrl()).toBe('https://publikhq.com/in-app/privacy')
     void ensureSignedIn(scriptedUI({ [WORDS.title]: 'wait' }).ui)
     await vi.advanceTimersByTimeAsync(1_000)
     expect(native.selfTestLines).toEqual([])
@@ -759,17 +782,20 @@ describe('the test hooks work only in a test build', () => {
     _resetPublikForTests()
     native.launch = { PUBLIK_API_BASE_URL: 'http://10.0.2.2:8787/api/v1' }
     await loadLaunchOptions()
-    expect(accountDeletionUrl()).toBe('http://10.0.2.2:8787/settings/profile#delete-account-title')
+    expect(accountDeletionUrl()).toBe('http://10.0.2.2:8787/in-app/delete-account')
+    expect(publikPrivacyUrl()).toBe('http://10.0.2.2:8787/in-app/privacy')
   })
 
   it('PUBLIK_API_BASE_URL must point at this computer (127.0.0.1, localhost, 10.0.2.2)', async () => {
     native.launch = { PUBLIK_API_BASE_URL: 'https://publik.example.org/api/v1' }
     await loadLaunchOptions()
-    expect(accountDeletionUrl()).toBe('https://publikhq.com/settings/profile#delete-account-title')
+    expect(accountDeletionUrl()).toBe('https://publikhq.com/in-app/delete-account')
+    expect(publikPrivacyUrl()).toBe('https://publikhq.com/in-app/privacy')
     _resetPublikForTests()
     native.launch = { PUBLIK_API_BASE_URL: 'http://localhost:8787' }
     await loadLaunchOptions()
-    expect(accountDeletionUrl()).toBe('http://localhost:8787/settings/profile#delete-account-title')
+    expect(accountDeletionUrl()).toBe('http://localhost:8787/in-app/delete-account')
+    expect(publikPrivacyUrl()).toBe('http://localhost:8787/in-app/privacy')
   })
 })
 

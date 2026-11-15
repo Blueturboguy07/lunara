@@ -28,6 +28,7 @@ import { loadStorefront, purchaseLinksAllowed } from '../lib/storefront'
 import { localToday } from '../lib/dates'
 import {
   accountDeletionUrl,
+  publikPrivacyUrl,
   deletePublikDataOnThisPhone,
   disconnectPublik,
   fetchPublikWallet,
@@ -636,6 +637,12 @@ export function Settings() {
       window.open(url, '_blank', 'noopener,noreferrer')
       if (alsoCycleData) location.reload()
     }
+  }
+
+  /** A publik in-app page (lib/publik.ts): the in-app sheet on a phone, a new tab in a browser. */
+  async function openPublikPage(url: string) {
+    if (isNative) await Browser.open({ url }).catch(() => undefined)
+    else window.open(url, '_blank', 'noopener,noreferrer')
   }
 
   async function toggleUsageCounting() {
@@ -1264,6 +1271,10 @@ export function Settings() {
             <span className="muted">{publikBusy ? 'Signing out…' : '›'}</span>
           </button>
         )}
+        <button className="setting-row" onClick={() => void openPublikPage(publikPrivacyUrl())}>
+          <span>publik privacy policy</span>
+          <span className="muted">›</span>
+        </button>
         <p className="microcopy" style={{ padding: '4px 0 12px' }}>
           {signedIn
             ? 'You signed in with publik. '
