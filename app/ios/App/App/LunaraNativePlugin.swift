@@ -2,6 +2,7 @@ import Capacitor
 import Foundation
 import HealthKit
 import LocalAuthentication
+import SafariServices
 import Security
 import StoreKit
 import UIKit
@@ -28,6 +29,10 @@ public final class LunaraNativePlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "printReport", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "publikLaunchOptions", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "publikSelfTestDone", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "publikTestLine", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "publikSheetOpen", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "publikSheetClose", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "publikWatchStop", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "appStoreStorefront", returnType: CAPPluginReturnPromise)
     ]
 
@@ -71,7 +76,7 @@ public final class LunaraNativePlugin: CAPPlugin, CAPBridgedPlugin {
     // MARK: publik launch options and self-test
 
     private static let publikLaunchNames = [
-        "PUBLIK_API_BASE_URL", "PUBLIK_SELF_TEST", "DO_NOT_TRACK", "PUBLIK_TELEMETRY", "PUBLIK_TELEMETRY_DEBUG"
+        "PUBLIK_API_BASE_URL", "PUBLIK_SELF_TEST", "PUBLIK_TEST_SIGN_IN", "DO_NOT_TRACK", "PUBLIK_TELEMETRY", "PUBLIK_TELEMETRY_DEBUG"
     ]
 
     /// The fake publik of a test runs on this computer.
@@ -85,7 +90,7 @@ public final class LunaraNativePlugin: CAPPlugin, CAPBridgedPlugin {
     /// A Release build never compiles them in. PUBLIK_API_BASE_URL must name this computer.
     private func publikLaunchValue(_ name: String) -> String? {
         #if !PUBLIK_TEST_HOOKS
-        if name == "PUBLIK_API_BASE_URL" || name == "PUBLIK_SELF_TEST" { return nil }
+        if name == "PUBLIK_API_BASE_URL" || name == "PUBLIK_SELF_TEST" || name == "PUBLIK_TEST_SIGN_IN" { return nil }
         #endif
         let fromEnvironment = ProcessInfo.processInfo.environment[name]
         let fromArguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)[name].map { "\($0)" }
@@ -123,16 +128,238 @@ public final class LunaraNativePlugin: CAPPlugin, CAPBridgedPlugin {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { exit(0) }
     }
 
+    /// PUBLIK_TEST_SIGN_IN (test builds only): one line on stdout for the CI log. The app goes on.
+    @objc public func publikTestLine(_ call: CAPPluginCall) {
+        guard publikLaunchValue("PUBLIK_TEST_SIGN_IN") != nil else {
+            call.reject("No publik sign-in test was requested.", "PUBLIK_NO_TEST")
+            return
+        }
+        publikTestPrint(call.getString("line") ?? "")
+        call.resolve()
+    }
+
+    /// A line for the CI log, only in a test build that was asked for the sign-in test. Never a key.
+    private func publikTestPrint(_ line: String) {
+        #if PUBLIK_TEST_HOOKS
+        guard !line.isEmpty, publikLaunchValue("PUBLIK_TEST_SIGN_IN") != nil else { return }
+        print(line)
+        fflush(stdout)
+        #endif
+    }
+
+    // MARK: publik in-app sheet and its wallet check
+    //
+    // While SFSafariViewController covers the app, the web view's JavaScript timers stop, so a
+    // wallet check in the web layer cannot see the sign-in. The check runs here instead: GET /wallet
+    // every 3 s on a fixed grid, for at most 10 minutes, each check with its own 8 s limit. When
+    // publik says the work is done ("claimed", or a plan or pack), this closes the sheet itself and
+    // tells the web layer ("publikSheet" event). It also checks at once when the app becomes active
+    // and when the person closes the sheet by hand. The key goes only to publikhq.com (or, in a test
+    // build, to the fake publik on this computer) and is never printed.
+
+    private static let publikWatchInterval: TimeInterval = 3
+    private static let publikWatchLimit: TimeInterval = 10 * 60
+    private static let publikCheckTimeout: TimeInterval = 8
+
+    private var publikSheet: SFSafariViewController?
+    private var publikWatchTimer: DispatchSourceTimer?
+    private var publikActiveObserver: NSObjectProtocol?
+    private var publikWatchRun = 0
+    private var publikWatchURL: URL?
+    private var publikWatchKey: String?
+    private var publikWatchUntil = "claimed"
+    private var publikWatchEnd = Date.distantPast
+    private lazy var publikWatchSession: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = Self.publikCheckTimeout
+        configuration.timeoutIntervalForResource = Self.publikCheckTimeout
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.urlCache = nil
+        return URLSession(configuration: configuration)
+    }()
+
+    private static func publikMillis() -> Int64 {
+        Int64(Date().timeIntervalSince1970 * 1000)
+    }
+
+    /// GET /wallet goes only to publik: publikhq.com over https, or the fake publik of a test build.
+    private func publikWalletURL(_ raw: String?) -> URL? {
+        guard let raw, let url = URL(string: raw), let scheme = url.scheme?.lowercased(),
+              let host = url.host?.lowercased(), url.path.hasSuffix("/api/v1/wallet") else { return nil }
+        if scheme == "https" && host == "publikhq.com" { return url }
+        #if PUBLIK_TEST_HOOKS
+        if (scheme == "http" || scheme == "https") && Self.publikTestHosts.contains(host) { return url }
+        #endif
+        return nil
+    }
+
+    private func publikTopViewController() -> UIViewController? {
+        var top = bridge?.viewController
+        while let presented = top?.presentedViewController, !presented.isBeingDismissed {
+            top = presented
+        }
+        return top
+    }
+
+    /// Opens publik's page in SFSafariViewController. With walletUrl, key and until, it also starts the wallet check.
+    @objc public func publikSheetOpen(_ call: CAPPluginCall) {
+        guard let raw = call.getString("url"), let url = URL(string: raw),
+              let scheme = url.scheme?.lowercased(), scheme == "https" || scheme == "http" else {
+            call.reject("A valid http(s) URL is required.", "INVALID_ARGUMENT")
+            return
+        }
+        let walletURL = publikWalletURL(call.getString("walletUrl"))
+        let key = call.getString("key")
+        let until = call.getString("until") == "plan" ? "plan" : "claimed"
+        DispatchQueue.main.async {
+            let present: () -> Void = {
+                guard let host = self.publikTopViewController() else {
+                    call.reject("There is no screen to show the page on.", "NO_VIEW")
+                    return
+                }
+                let sheet = SFSafariViewController(url: url)
+                sheet.delegate = self
+                sheet.dismissButtonStyle = .done
+                sheet.modalPresentationStyle = .fullScreen
+                self.publikSheet = sheet
+                host.present(sheet, animated: true) {
+                    self.publikTestPrint("publik sheet: opened at=\(Self.publikMillis())")
+                    call.resolve()
+                }
+                if let walletURL, let key, key.hasPrefix("pk_") {
+                    self.publikWatchStart(url: walletURL, key: key, until: until)
+                } else {
+                    self.publikStopWatch()
+                }
+            }
+            // A second open replaces the first sheet.
+            if let open = self.publikSheet, open.presentingViewController != nil {
+                self.publikSheet = nil
+                open.dismiss(animated: false, completion: present)
+            } else {
+                present()
+            }
+        }
+    }
+
+    @objc public func publikSheetClose(_ call: CAPPluginCall) {
+        DispatchQueue.main.async {
+            guard let sheet = self.publikSheet, sheet.presentingViewController != nil else {
+                self.publikSheet = nil
+                call.resolve()
+                return
+            }
+            self.publikSheet = nil
+            sheet.dismiss(animated: true) { call.resolve() }
+        }
+    }
+
+    @objc public func publikWatchStop(_ call: CAPPluginCall) {
+        DispatchQueue.main.async {
+            self.publikStopWatch()
+            call.resolve()
+        }
+    }
+
+    private func publikWatchStart(url: URL, key: String, until: String) {
+        publikStopWatch()
+        publikWatchRun += 1
+        let run = publikWatchRun
+        publikWatchURL = url
+        publikWatchKey = key
+        publikWatchUntil = until
+        publikWatchEnd = Date().addingTimeInterval(Self.publikWatchLimit)
+        // A fixed 3-second grid: every tick starts its own check, even when an earlier one still waits.
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now() + Self.publikWatchInterval, repeating: Self.publikWatchInterval, leeway: .milliseconds(100))
+        timer.setEventHandler { [weak self] in self?.publikCheck(run: run) }
+        timer.resume()
+        publikWatchTimer = timer
+        publikActiveObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.publikCheck(run: run)
+        }
+    }
+
+    private func publikStopWatch() {
+        publikWatchRun += 1
+        publikWatchTimer?.cancel()
+        publikWatchTimer = nil
+        if let observer = publikActiveObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        publikActiveObserver = nil
+        publikWatchURL = nil
+        publikWatchKey = nil
+    }
+
+    /// True when the wallet shows what the sheet waits for (the same rule as walletDone in src/lib/publik.ts).
+    private static func publikWalletDone(_ body: [String: Any], until: String) -> Bool {
+        if until == "plan" {
+            let kind = (body["plan"] as? [String: Any])?["kind"] as? String
+            let balance = (body["balance_micros"] as? NSNumber)?.doubleValue ?? 0
+            return kind == "plan" || kind == "pack" || balance > 0
+        }
+        return body["claim_state"] as? String == "claimed"
+    }
+
+    private func publikCheck(run: Int) {
+        guard run == publikWatchRun, let url = publikWatchURL, let key = publikWatchKey else { return }
+        if Date() >= publikWatchEnd {
+            publikStopWatch()
+            notifyListeners("publikSheet", data: ["state": "timeout"])
+            return
+        }
+        publikRequest(url: url, key: key, until: publikWatchUntil) { [weak self] in self?.publikDone(run: run) }
+    }
+
+    /// One GET /wallet with its own 8 s limit; `done` runs on the main queue when the wallet shows what the wait is for.
+    private func publikRequest(url: URL, key: String, until: String, done: @escaping () -> Void) {
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: Self.publikCheckTimeout)
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        publikWatchSession.dataTask(with: request) { data, response, _ in
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode), let data,
+                  let body = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  Self.publikWalletDone(body, until: until) else { return }
+            DispatchQueue.main.async(execute: done)
+        }.resume()
+    }
+
+    /// publik says the work is done: stop checking, close the sheet, then tell the web layer.
+    private func publikDone(run: Int) {
+        guard run == publikWatchRun else { return }
+        publikStopWatch()
+        let tell = { self.notifyListeners("publikSheet", data: ["state": "done"]) }
+        guard let sheet = publikSheet, sheet.presentingViewController != nil else {
+            publikSheet = nil
+            tell()
+            return
+        }
+        publikSheet = nil
+        sheet.dismiss(animated: true) {
+            self.publikTestPrint("publik sheet: closed by the app at=\(Self.publikMillis())")
+            tell()
+        }
+    }
+
     // MARK: App Store storefront
 
     /// The App Store storefront country (ISO 3166-1 alpha-3, for example "USA"), or null when
     /// StoreKit has none. The web layer shows purchase links only on the US storefront
     /// (src/lib/storefront.ts). This reads no account data and makes no purchase.
+    /// The simulator has no App Store account (StoreKit answers a default country there), so it
+    /// counts as unknown: no purchase link.
     @objc public func appStoreStorefront(_ call: CAPPluginCall) {
+        #if targetEnvironment(simulator)
+        call.resolve(["countryCode": NSNull()])
+        #else
         Task {
             let country = await Storefront.current?.countryCode
             call.resolve(["countryCode": country ?? NSNull()])
         }
+        #endif
     }
 
     // MARK: Secure vault
@@ -710,5 +937,23 @@ public final class LunaraNativePlugin: CAPPlugin, CAPBridgedPlugin {
         UserDefaults(suiteName: widgetSuite)?.removeObject(forKey: widgetSnapshotKey)
         WidgetCenter.shared.reloadAllTimelines()
         call.resolve()
+    }
+}
+
+// MARK: SFSafariViewController: closed by hand
+
+extension LunaraNativePlugin: SFSafariViewControllerDelegate {
+    /// "Done": the sheet closes itself. One wallet check at once; then the web layer, which runs again, takes over.
+    public func safariViewControllerDidFinish(_ controller: SFSafariViewController) {
+        guard controller === publikSheet else { return }
+        publikSheet = nil
+        publikTestPrint("publik sheet: closed by hand at=\(Self.publikMillis())")
+        notifyListeners("publikSheet", data: ["state": "closed"])
+        guard let url = publikWatchURL, let key = publikWatchKey else { return }
+        let until = publikWatchUntil
+        publikStopWatch()
+        publikRequest(url: url, key: key, until: until) { [weak self] in
+            self?.notifyListeners("publikSheet", data: ["state": "done"])
+        }
     }
 }

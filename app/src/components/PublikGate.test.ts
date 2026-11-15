@@ -10,7 +10,7 @@ vi.mock('../lib/publik', () => ({
   applyChoiceToAi: async () => undefined,
   ensureSignedIn: async () => {
     gate.calls++
-    if (gate.results.shift() === 'fail') throw new Error('The database is closed.')
+    if (gate.results.shift() === 'fail') throw Object.assign(new Error('Transaction aborted'), { name: 'AbortError' })
     return { key: 'pk_live_x', wallet: null, choice: null, chosenNow: false, offline: false }
   },
   gateScreen: (id: string, _w: unknown, note: string | null, message?: string) => ({
@@ -22,7 +22,10 @@ vi.mock('../lib/publik', () => ({
   }),
   needsSignInOnDemand: async () => false,
   onPublikSignOut: () => () => undefined,
+  openPublikSheet: () => undefined,
   openWithoutWall: async () => undefined,
+  problemText: (error: unknown) =>
+    error instanceof Error && error.name === 'AbortError' ? 'Lunara could not read its data on this phone. Tap Retry.' : undefined,
   signInOnDemand: async () => null,
 }))
 
@@ -35,7 +38,7 @@ beforeEach(() => {
 })
 
 describe('the wall never freezes', () => {
-  it('a failed gate is not cached: "not reachable" with Retry shows, and Retry runs the gate again', async () => {
+  it('a failed gate is not cached: fixed words (never the raw error) with Retry show, and Retry runs the gate again', async () => {
     gate.results = ['fail', 'pass']
     const shown: Array<{ id: string; body: string }> = []
     const result = await passWall(async (screen) => {
@@ -43,13 +46,14 @@ describe('the wall never freezes', () => {
       return 'retry'
     })
     expect(result).toMatchObject({ key: 'pk_live_x' })
-    expect(shown).toEqual([{ id: 'unreachable', body: 'The database is closed.' }])
+    expect(shown).toEqual([{ id: 'unreachable', body: 'Lunara could not read its data on this phone. Tap Retry.' }])
+    expect(JSON.stringify(shown)).not.toContain('Transaction aborted')
     expect(gate.calls).toBe(2)
   })
 
   it('startWall() forgets a failed promise by itself', async () => {
     gate.results = ['fail', 'pass']
-    await expect(startWall()).rejects.toThrow('The database is closed.')
+    await expect(startWall()).rejects.toThrow('Transaction aborted')
     await expect(startWall()).resolves.toMatchObject({ key: 'pk_live_x' })
     expect(gate.calls).toBe(2)
   })

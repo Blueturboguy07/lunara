@@ -1,6 +1,7 @@
 import { Browser } from '@capacitor/browser'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import {
   generateRecoveryCode,
   hashPin,
@@ -829,11 +830,21 @@ export function Settings() {
   return (
     <div className="page">
       <h1>Settings</h1>
-      {status && (
-        <div className="card" style={{ background: 'var(--rose-100)', fontSize: 14 }}>
-          {status}
-        </div>
-      )}
+      {/*
+        The message shows at the bottom of the screen, above the tab bar, so it is
+        on screen wherever the person tapped (blind test L5: "Ask again" showed its
+        message at the top of a long page, off screen).
+      */}
+      {status &&
+        createPortal(
+          <div className="settings-toast" role="status">
+            <span>{status}</span>
+            <button type="button" onClick={() => setStatus(null)}>
+              OK
+            </button>
+          </div>,
+          document.body,
+        )}
 
       <Section title="Goal">
         {(Object.keys(GOAL_LABELS) as Goal[]).map((g) => (

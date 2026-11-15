@@ -2,6 +2,7 @@ import { getSetting, setSetting, SK } from '../db/schema'
 import { AI_LIMITS } from './aiLimits'
 import type { AssistantProvider } from './assistant'
 import type { AssistantConsent } from './assistantContext'
+import { publikProviderWords } from './publikApi'
 
 /**
  * AI chat is optional, and it waits for the person's answer before it sends
@@ -59,17 +60,20 @@ export interface HealthDestination {
   name: string
   /** Your own key: the account the data goes to. Not set for publik. */
   ownAccountWith?: string
+  /** publik: the companies from GET /wallet `ai_providers`, when publik sent them. */
+  providers?: string[]
 }
 
 /**
- * The AI providers publik can send a message to (App Store rule 5.1.2(i): name who gets the data).
- * Neither the wallet nor the install answer lists the providers, so the screen names examples.
+ * Where a message goes, by the provider Lunara AI uses. On publik, `publikProviders` is the true
+ * list from GET /wallet `ai_providers` (App Store rule 5.1.2(i): name who gets the data); without
+ * it the screen names no company.
  */
-export const PUBLIK_PROVIDER_EXAMPLES = 'for example Anthropic, Google or OpenAI'
-
-/** Where a message goes, by the provider Lunara AI uses. */
-export function healthDestination(provider: AssistantProvider, baseUrl?: string): HealthDestination {
-  if (provider === 'publik') return { id: 'publik', name: `publik (publikhq.com) and the AI provider that answers (${PUBLIK_PROVIDER_EXAMPLES})` }
+export function healthDestination(provider: AssistantProvider, baseUrl?: string, publikProviders?: readonly string[] | null): HealthDestination {
+  if (provider === 'publik') {
+    const providers = publikProviders?.length ? [...publikProviders] : undefined
+    return { id: 'publik', name: `publik (publikhq.com) and ${publikProviderWords(providers)}`, ...(providers ? { providers } : {}) }
+  }
   if (provider === 'anthropic') return { id: 'anthropic', name: 'Anthropic', ownAccountWith: 'Anthropic' }
   const custom = baseUrl?.trim()
   if (custom) {
@@ -97,7 +101,7 @@ function capitalized(text: string): string {
 export function chatAgreementBody(destination: HealthDestination): string[] {
   if (!destination.ownAccountWith) {
     return [
-      `To answer you, Lunara sends your question and an anonymized summary of your cycle data to publik (publikhq.com). publik sends it to the AI provider that answers (${PUBLIK_PROVIDER_EXAMPLES}). It has no name, email or birth date.`,
+      `To answer you, Lunara sends your question and an anonymized summary of your cycle data to publik (publikhq.com). publik sends it to ${publikProviderWords(destination.providers)}. It has no name, email or birth date.`,
       'publik does not store the content of your messages or answers, and does not use it for ads, analytics, training, or sale. It keeps billing records (model, token counts, cost) without content.',
       'The AI provider processes your message to answer it, under its own terms.',
     ]

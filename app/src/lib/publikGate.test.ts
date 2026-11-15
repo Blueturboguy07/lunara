@@ -37,7 +37,7 @@ vi.mock('../native/secureVault', () => ({
 }))
 
 // failOnce: 'get:<key>', 'set:<key>' or 'remove:<key>' fails once (a closed database).
-const settings = vi.hoisted(() => ({ store: new Map<string, string>(), failOnce: new Set<string>() }))
+const settings = vi.hoisted(() => ({ store: new Map<string, string>(), failOnce: new Set<string>(), failAlways: '' }))
 vi.mock('../db/schema', () => {
   const keys = [
     'birthYear', 'aiProvider', 'aiModel', 'aiBaseUrl',
@@ -46,7 +46,7 @@ vi.mock('../db/schema', () => {
     'aiHealthConsent',
   ]
   const fail = (op: string, key: string) => {
-    if (settings.failOnce.delete(`${op}:${key}`)) throw new Error('The database is closed.')
+    if (settings.failOnce.delete(`${op}:${key}`) || settings.failAlways === `${op}:${key}`) throw new Error('The database is closed.')
   }
   return {
     SK: Object.fromEntries(keys.map((k) => [k, k])),
@@ -68,7 +68,7 @@ vi.mock('../db/schema', () => {
 vi.mock('./publikBuild', () => ({
   PUBLIK_BUILD: {
     appSlug: 'lunara',
-    appVersion: '0.2.5',
+    appVersion: '0.2.6',
     appToken: 'pat_lunara_' + 'g'.repeat(32),
     baseUrl: 'https://publikhq.com/api/v1',
     disclosureVersion: 3,
@@ -84,15 +84,41 @@ const native = vi.hoisted(() => ({
   appState: null as null | ((state: { isActive: boolean }) => void),
   browserFinished: null as null | (() => void),
   closed: 0,
+  browserOpened: [] as string[],
+  // iOS: the native sheet (LunaraNativePlugin.swift publikSheetOpen) and its wallet check.
+  sheets: [] as Array<Record<string, unknown>>,
+  sheetCloses: 0,
+  sheetOpenFails: false,
+  watchStops: 0,
+  testLines: [] as string[],
+  sheetEvent: null as null | ((event: { state: 'done' | 'closed' | 'timeout' }) => void),
 }))
-vi.mock('../native/bridge', () => ({
-  getLunaraNativeBridge: () => ({
+vi.mock('../native/bridge', () => {
+  const bridge = {
     publikLaunchOptions: async () => native.launch,
     publikSelfTestDone: async ({ line }: { line: string }) => {
       native.selfTestLines.push(line)
     },
-  }),
-}))
+    publikTestLine: async ({ line }: { line: string }) => {
+      native.testLines.push(line)
+    },
+    publikSheetOpen: async (options: Record<string, unknown>) => {
+      if (native.sheetOpenFails) throw new Error('not implemented')
+      native.sheets.push(options)
+    },
+    publikSheetClose: async () => {
+      native.sheetCloses++
+    },
+    publikWatchStop: async () => {
+      native.watchStops++
+    },
+    addListener: async (_event: string, callback: (event: { state: 'done' | 'closed' | 'timeout' }) => void) => {
+      native.sheetEvent = callback
+      return { remove: async () => undefined }
+    },
+  }
+  return { getLunaraNativeBridge: () => bridge }
+})
 vi.mock('@capacitor/app', () => ({
   App: {
     addListener: async (_event: string, callback: (state: { isActive: boolean }) => void) => {
@@ -110,7 +136,9 @@ vi.mock('@capacitor/browser', () => ({
     close: async () => {
       native.closed++
     },
-    open: async () => undefined,
+    open: async ({ url }: { url: string }) => {
+      native.browserOpened.push(url)
+    },
   },
 }))
 
@@ -174,8 +202,11 @@ import {
   needsSignInOnDemand,
   onPublikSignOut,
   openWithoutWall,
+  problemText,
   publikPrivacyUrl,
   publikSupportUrl,
+  STORAGE_PROBLEM,
+  storageHiccup,
   REPORT_ANSWER_LABEL,
   REPORT_ANSWER_NOTE,
   REPORT_REASONS,
@@ -184,16 +215,18 @@ import {
   type GateAction,
   type GateScreen,
   type GateUI,
+  openPublikSheet,
+  type SheetWatch,
 } from './publik'
 
 const WORDS = {
   title: 'Sign in with publik',
-  signInBody: 'This app uses your publik account. Click Sign in with publik, then sign in in your browser. This window continues when you are signed in.',
-  waiting: 'Waiting for you to sign in in your browser.',
-  timeout: 'No sign-in after 10 minutes. Click Sign in with publik to try again.',
+  signInBody: 'Lunara uses your publik account. Tap Sign in with publik, then sign in on the publik page. Lunara continues when you are signed in.',
+  waiting: 'Waiting for you to sign in on the publik page.',
+  timeout: 'No sign-in after 10 minutes. Tap Sign in with publik to try again.',
   unreachable: 'publik is not reachable. Check your connection.',
   chooseTitle: 'Choose how to pay for AI',
-  planWaiting: 'Waiting for your plan. Finish in your browser.',
+  planWaiting: 'Waiting for your plan. Finish on the publik page.',
   connectTitle: 'Connect your plan',
 } as const
 
@@ -205,6 +238,7 @@ const claimedPlan: Wallet = { claim_state: 'claimed', account: { handle: 'mann' 
 function scriptedUI(press: Record<string, string> = {}) {
   const screens: GateScreen[] = []
   const opened: string[] = []
+  const watches: Array<SheetWatch | undefined> = []
   const ui: GateUI = {
     show(screen) {
       screens.push(screen)
@@ -214,11 +248,12 @@ function scriptedUI(press: Record<string, string> = {}) {
       if (!screen.note && screen.id !== 'unreachable') return Promise.resolve(screen.buttons[0]!.action)
       return new Promise(() => {})
     },
-    openUrl(url) {
+    openUrl(url, watch) {
       opened.push(url)
+      watches.push(watch)
     },
   }
-  return { ui, screens, opened }
+  return { ui, screens, opened, watches }
 }
 
 const telemetryCalls = () => net.calls.filter((c) => c.url.endsWith('/api/v1/telemetry'))
@@ -235,10 +270,17 @@ beforeEach(() => {
   vault.readError = null
   settings.store.clear()
   settings.failOnce.clear()
+  settings.failAlways = ''
   settings.store.set('birthYear', '1990')
   native.launch = {}
   native.selfTestLines = []
   native.closed = 0
+  native.browserOpened = []
+  native.sheets = []
+  native.sheetCloses = 0
+  native.sheetOpenFails = false
+  native.watchStops = 0
+  native.testLines = []
   net.offline = false
   net.wallets = [anonymous]
   net.walletStatus = 200
@@ -262,13 +304,20 @@ describe('the gate words', () => {
     const choose = gateScreen('choose', { claim_state: 'claimed', claim_url: null, account: { handle: 'mann' }, plan: { kind: 'none', label: null }, balance_micros: 0, top_up_url: 'x', linked_at: null })
     expect(choose.title).toBe(WORDS.chooseTitle)
     // No handle and no balance: the plan screen can show before the PIN lock.
-    expect(choose.body).toBe('You are signed in to publik. This app uses AI. Get a publik plan, or use your own key.')
-    expect(choose.buttons.map((b) => b.label)).toEqual(['Get a plan', 'Use my own key'])
+    expect(choose.body).toBe('You are signed in to publik. Lunara AI needs a publik plan or your own AI key.')
+    // Each label says what the button does; "Not now" keeps the sign-in and asks again later.
+    expect(choose.buttons.map((b) => b.label)).toEqual(['Get a plan', 'Use my own AI key', 'Not now'])
     const connect = gateScreen('choose', { claim_state: 'claimed', claim_url: null, account: null, plan: { kind: 'pack', label: null }, balance_micros: 2_500_000, top_up_url: 'x', linked_at: null })
     expect(connect.title).toBe(WORDS.connectTitle)
-    expect(connect.body).toBe('You are signed in to publik. You have publik credit. Connect it to use AI in this app, or use your own key.')
+    expect(connect.body).toBe('You are signed in to publik. You have publik credit. Use it for Lunara AI, or use your own AI key.')
     expect(JSON.stringify([choose, connect])).not.toMatch(/@mann|\$2\.50/)
-    expect(connect.buttons.map((b) => b.label)).toEqual(['Connect your plan', 'Use my own key'])
+    expect(connect.buttons).toEqual([
+      { action: 'connect', label: 'Use my publik plan' },
+      { action: 'own_key', label: 'Use my own AI key' },
+      { action: 'not_now', label: 'Not now' },
+    ])
+    // Phone words: no "click", "browser" or "computer" on any gate screen.
+    expect(JSON.stringify([gateScreen('sign_in', null), choose, connect])).not.toMatch(/click|browser|computer/i)
   })
 
   it('the module file holds what the publik scan looks for, in code', () => {
@@ -285,27 +334,41 @@ describe('the gate words', () => {
 describe('purchase links: US App Store storefront only', () => {
   const empty = { claim_state: 'claimed' as const, claim_url: null, account: null, plan: { kind: 'none' as const, label: null }, balance_micros: 0, top_up_url: 'https://publikhq.com/wallet?top_up=1', linked_at: null }
 
-  it('any other storefront, or an unknown one: no link, no button, no price; Connect your plan and Use my own key stay', () => {
+  it('any other storefront, or an unknown one: no link, no button, no price; Check for my plan, Use my own AI key and Not now stay', () => {
     for (const storefront of ['CAN', 'GBR', 'IND', null]) {
       _setStorefrontForTests(storefront)
       const choose = gateScreen('choose', empty)
-      expect(choose.body).toBe('You are signed in to publik. This app uses AI. To get a plan, search for "publik" on Google. Then click Connect your plan. Or use your own key.')
-      expect(choose.buttons).toEqual([{ action: 'check_plan', label: 'Connect your plan' }, { action: 'own_key', label: 'Use my own key' }])
-      expect(JSON.stringify(choose)).not.toMatch(/Get a plan|https?:|\$\d/)
+      expect(choose.body).toBe('You are signed in to publik. Lunara AI needs a publik plan or your own AI key. To get a plan, search for "publik" on Google. Then tap Check for my plan.')
+      expect(choose.buttons).toEqual([
+        { action: 'check_plan', label: 'Check for my plan' },
+        { action: 'own_key', label: 'Use my own AI key' },
+        { action: 'not_now', label: 'Not now' },
+      ])
+      expect(JSON.stringify(choose)).not.toMatch(/Get a plan|Add a plan|https?:|\$\d/)
       const connect = gateScreen('choose', { ...empty, plan: { kind: 'plan', label: null } })
-      expect(connect.buttons.map((b) => b.label)).toEqual(['Connect your plan', 'Use my own key'])
+      expect(connect.buttons.map((b) => b.label)).toEqual(['Use my publik plan', 'Use my own AI key', 'Not now'])
     }
   })
 
   it('the US storefront keeps Get a plan', () => {
     _setStorefrontForTests('USA')
-    expect(gateScreen('choose', empty).buttons.map((b) => b.label)).toEqual(['Get a plan', 'Use my own key'])
+    expect(gateScreen('choose', empty).buttons.map((b) => b.label)).toEqual(['Get a plan', 'Use my own AI key', 'Not now'])
   })
 
-  it('outside the US the gate opens no purchase page: Connect your plan reads the account again', async () => {
+  it('"Not now" on the plan screen keeps the sign-in, sets no answer, and opens Lunara (required mode too)', async () => {
+    net.wallets = [claimedEmpty]
+    const { ui, screens } = scriptedUI({ [WORDS.chooseTitle]: 'Not now' })
+    const run = ensureSignedIn(ui)
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(await run).toMatchObject({ choice: null, chosenNow: false })
+    expect(screens.map((s) => s.title)).toEqual([WORDS.chooseTitle])
+    expect(settings.store.has('publikChoice')).toBe(false)
+  })
+
+  it('outside the US the gate opens no purchase page: Check for my plan reads the account again', async () => {
     _setStorefrontForTests('CAN')
     net.wallets = [claimedEmpty, claimedEmpty, claimedPlan]
-    const { ui, screens, opened } = scriptedUI({ [WORDS.chooseTitle]: 'Connect your plan' })
+    const { ui, screens, opened } = scriptedUI({ [WORDS.chooseTitle]: 'Check for my plan' })
     const run = ensureSignedIn(ui)
     await vi.advanceTimersByTimeAsync(5_000)
     expect(await run).toMatchObject({ choice: 'publik', chosenNow: true })
@@ -332,7 +395,7 @@ describe('ensureSignedIn against a fake publik', () => {
       [WORDS.chooseTitle, WORDS.planWaiting],
       [WORDS.connectTitle, null],
     ])
-    expect(screens[4]!.body).toBe('You are signed in to publik. You have a publik plan. Connect it to use AI in this app, or use your own key.')
+    expect(screens[4]!.body).toBe('You are signed in to publik. You have a publik plan. Use it for Lunara AI, or use your own AI key.')
     // Sign-in opens publik's bare in-app page; the US "Get a plan" link stays on the normal site.
     expect(opened).toEqual(['https://publikhq.com/claim/abc?in_app=1', 'https://publikhq.com/wallet?top_up=1'])
     expect(native.closed).toBe(2) // the in-app browser closes when publik says sign-in, then the plan, is done
@@ -346,7 +409,7 @@ describe('ensureSignedIn against a fake publik', () => {
     expect(events[0]!.auth).toBe('Bearer pk_live_gatetest')
     const first = JSON.parse(events[0]!.body!) as Record<string, unknown>
     expect(Object.keys(first).sort()).toEqual(['app', 'app_version', 'event', 'install_id', 'os', 'v'])
-    expect(first).toMatchObject({ v: 1, app: 'lunara', event: 'app_opened', app_version: '0.2.5', os: 'ios' })
+    expect(first).toMatchObject({ v: 1, app: 'lunara', event: 'app_opened', app_version: '0.2.6', os: 'ios' })
     expect(String(first.install_id)).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
     await vi.advanceTimersByTimeAsync(30 * 60_000)
     expect(JSON.parse(telemetryCalls()[1]!.body!)).toMatchObject({ event: 'active_session', install_id: first.install_id })
@@ -359,7 +422,7 @@ describe('ensureSignedIn against a fake publik', () => {
 
   it('Use my own key is stored, and the next start skips the plan screen', async () => {
     net.wallets = [claimedEmpty]
-    const first = scriptedUI({ [WORDS.chooseTitle]: 'Use my own key' })
+    const first = scriptedUI({ [WORDS.chooseTitle]: 'Use my own AI key' })
     const run = ensureSignedIn(first.ui)
     await vi.advanceTimersByTimeAsync(1_000)
     expect(await run).toMatchObject({ choice: 'own_key', chosenNow: true })
@@ -500,9 +563,9 @@ describe('the self-test and the test hook', () => {
     const { ui, screens } = scriptedUI()
     void ensureSignedIn(ui)
     await vi.advanceTimersByTimeAsync(1_000)
-    expect(native.selfTestLines).toEqual(['publik self-test: ok lunara 0.2.5'])
+    expect(native.selfTestLines).toEqual(['publik self-test: ok lunara 0.2.6'])
     expect(net.calls.map((c) => c.url)).toEqual(['https://publikhq.com/api/v1/installs', 'https://publikhq.com/api/v1/wallet'])
-    expect(JSON.parse(net.calls[0]!.body!)).toMatchObject({ app_slug: 'lunara', app_version: '0.2.5', os: 'ios' })
+    expect(JSON.parse(net.calls[0]!.body!)).toMatchObject({ app_slug: 'lunara', app_version: '0.2.6', os: 'ios' })
     expect(screens).toEqual([])
     log.mockRestore()
   })
@@ -535,7 +598,7 @@ describe('the self-test and the test hook', () => {
   it('PUBLIK_API_BASE_URL points every call at another publik', async () => {
     native.launch = { PUBLIK_API_BASE_URL: 'http://127.0.0.1:8787/api/v1/' }
     net.wallets = [anonymous, anonymous, claimedPlan]
-    const { ui, opened } = scriptedUI({ [WORDS.connectTitle]: 'Connect your plan' })
+    const { ui, opened } = scriptedUI({ [WORDS.connectTitle]: 'Use my publik plan' })
     const run = ensureSignedIn(ui)
     await vi.advanceTimersByTimeAsync(10_000)
     await run
@@ -582,7 +645,7 @@ describe('the plan screen waits until the age is known (required mode)', () => {
 
     // Onboarding saved the age (an adult). The gate runs again (PublikGate askPlanAfterOnboarding).
     settings.store.set('birthYear', '1990')
-    const after = scriptedUI({ [WORDS.chooseTitle]: 'Use my own key' })
+    const after = scriptedUI({ [WORDS.chooseTitle]: 'Use my own AI key' })
     const again = ensureSignedIn(after.ui)
     await vi.advanceTimersByTimeAsync(1_000)
     expect(await again).toMatchObject({ choice: 'own_key', chosenNow: true })
@@ -673,14 +736,14 @@ describe('optional mode: no wall, sign-in on demand', () => {
 
   it('sign in from Lunara AI, then the plan screen; counting starts only after sign-in', async () => {
     net.wallets = [anonymous, anonymous, claimedEmpty]
-    const { ui, screens } = scriptedUI({ [WORDS.chooseTitle]: 'Use my own key' })
+    const { ui, screens } = scriptedUI({ [WORDS.chooseTitle]: 'Use my own AI key' })
     const run = signInOnDemand(ui)
     await vi.advanceTimersByTimeAsync(2_000)
     expect(telemetryCalls()).toHaveLength(0) // still anonymous
     await vi.advanceTimersByTimeAsync(10_000)
     expect(await run).toMatchObject({ choice: 'own_key', chosenNow: true, offline: false })
     expect(screens.map((s) => s.title)).toEqual([WORDS.title, WORDS.title, WORDS.chooseTitle])
-    expect(screens.at(-1)!.buttons.map((b) => b.label)).toEqual(['Get a plan', 'Use my own key', 'Not now'])
+    expect(screens.at(-1)!.buttons.map((b) => b.label)).toEqual(['Get a plan', 'Use my own AI key', 'Not now'])
     expect(telemetryCalls()).toHaveLength(1)
     expect(await needsSignInOnDemand()).toBe(false)
   })
@@ -702,8 +765,80 @@ describe('optional mode: no wall, sign-in on demand', () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
     void openWithoutWall()
     await vi.advanceTimersByTimeAsync(1_000)
-    expect(native.selfTestLines).toEqual(['publik self-test: ok lunara 0.2.5'])
+    expect(native.selfTestLines).toEqual(['publik self-test: ok lunara 0.2.6'])
     log.mockRestore()
+  })
+})
+
+describe('the sign-in sheet closes by itself (iOS: the native shell checks while it covers the app)', () => {
+  it('the gate opens the sign-in page with the wallet check: every 3 s, 8 s per check, for "claimed"; the plan page for "plan"', async () => {
+    net.wallets = [anonymous, anonymous, anonymous, claimedEmpty, claimedEmpty, claimedEmpty, claimedPlan]
+    const { ui, opened, watches } = scriptedUI()
+    const run = ensureSignedIn(ui)
+    await vi.advanceTimersByTimeAsync(20_000)
+    await run
+    expect(opened).toEqual(['https://publikhq.com/claim/abc?in_app=1', 'https://publikhq.com/wallet?top_up=1'])
+    expect(watches).toEqual([
+      { walletUrl: 'https://publikhq.com/api/v1/wallet', key: 'pk_live_gatetest', until: 'claimed' },
+      { walletUrl: 'https://publikhq.com/api/v1/wallet', key: 'pk_live_gatetest', until: 'plan' },
+    ])
+    // The gate is through: the native check stops, and the sheet was closed twice (sign-in, then the plan).
+    expect(native.watchStops).toBe(1)
+    expect(native.sheetCloses).toBe(2)
+  })
+
+  it('openPublikSheet: iOS uses the native sheet with the check; a failed native call falls back to the plugin sheet; Android uses a Custom Tab', async () => {
+    const watch: SheetWatch = { walletUrl: 'https://publikhq.com/api/v1/wallet', key: 'pk_live_x', until: 'claimed' }
+    openPublikSheet('https://publikhq.com/claim/abc?in_app=1', watch)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(native.sheets).toEqual([{ url: 'https://publikhq.com/claim/abc?in_app=1', ...watch }])
+    expect(native.browserOpened).toEqual([])
+    native.sheetOpenFails = true
+    openPublikSheet('https://publikhq.com/in-app/privacy')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(native.browserOpened).toEqual(['https://publikhq.com/in-app/privacy'])
+    runtime.nativePlatform = 'android'
+    openPublikSheet('https://publikhq.com/claim/abc?in_app=1', watch)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(native.browserOpened).toEqual(['https://publikhq.com/in-app/privacy', 'https://publikhq.com/claim/abc?in_app=1'])
+    expect(native.sheets).toHaveLength(1)
+  })
+
+  it('the native sheet closing (by itself or by hand) checks at once: no 3-second wait', async () => {
+    const { ui, screens } = scriptedUI()
+    void ensureSignedIn(ui)
+    await vi.advanceTimersByTimeAsync(10)
+    expect(screens.at(-1)!.note).toBe(WORDS.waiting)
+    net.wallets = [claimedPlan]
+    const before = walletCalls().length
+    native.sheetEvent!({ state: 'done' })
+    await vi.advanceTimersByTimeAsync(10)
+    expect(walletCalls().length).toBeGreaterThan(before)
+    expect(screens.at(-1)!.title).toBe(WORDS.connectTitle)
+  })
+
+  it('PUBLIK_TEST_SIGN_IN (test builds only): presses Sign in once by itself and prints the pass line when the gate lets the person in', async () => {
+    native.launch = { PUBLIK_TEST_SIGN_IN: '1' }
+    net.wallets = [anonymous, anonymous, claimedEmpty]
+    settings.store.delete('birthYear')
+    const { ui, screens, opened } = scriptedUI({ [WORDS.title]: 'wait' })
+    const run = ensureSignedIn(ui)
+    await vi.advanceTimersByTimeAsync(4_000)
+    await run
+    expect(opened).toEqual(['https://publikhq.com/claim/abc?in_app=1'])
+    expect(screens.map((s) => s.note)).toEqual([WORDS.waiting])
+    expect(native.testLines).toEqual(['publik sign-in test: passed lunara 0.2.6'])
+  })
+
+  it('a production bundle ignores PUBLIK_TEST_SIGN_IN', async () => {
+    vi.stubEnv('DEV', false)
+    _resetPublikForTests()
+    native.launch = { PUBLIK_TEST_SIGN_IN: '1' }
+    const { ui, opened } = scriptedUI({ [WORDS.title]: 'wait' })
+    void ensureSignedIn(ui)
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(opened).toEqual([])
+    expect(native.testLines).toEqual([])
   })
 })
 
@@ -887,7 +1022,7 @@ describe('a vault item that cannot be read never locks the person out', () => {
       openUrl() {},
     })
     await vi.advanceTimersByTimeAsync(1_000)
-    expect(screens.map((s) => [s.id, s.body])).toEqual([['unreachable', 'The phone is locked.']])
+    expect(screens.map((s) => [s.id, s.body])).toEqual([['unreachable', 'Unlock your iPhone, then tap Retry.']])
     expect(vault.store.get('publik-api-key')).toBe('pk_live_saved')
     expect(net.calls.filter((c) => c.url.endsWith('/api/v1/installs'))).toHaveLength(0)
     vault.readError = null // unlocked
@@ -958,22 +1093,18 @@ describe('sign-out: the phone forgets first, then tells publik; counting stops; 
 })
 
 describe('the gate never freezes', () => {
-  it('a failure while it forgets a revoked key shows "not reachable" with Retry; Retry goes on to Sign in', async () => {
+  it('a storage hiccup while it forgets a revoked key is tried again with no screen; the gate goes on to Sign in', async () => {
     vault.store.set('publik-api-key', 'pk_live_old')
     settings.store.set('publikClaimState', 'claimed')
     net.revokedKey = 'pk_live_old'
     settings.failOnce.add('remove:publikChoice') // forgetInstall() removes it; the database fails once
     const { ui, screens } = retryingUI()
     void ensureSignedIn(ui)
-    await vi.advanceTimersByTimeAsync(1_000)
-    expect(screens.map((s) => [s.id, s.body])).toEqual([
-      ['unreachable', 'The database is closed.'],
-      ['sign_in', WORDS.signInBody],
-    ])
-    expect(screens[0]!.buttons).toEqual([{ action: 'retry', label: 'Retry' }])
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(screens.map((s) => [s.id, s.body])).toEqual([['sign_in', WORDS.signInBody]])
   })
 
-  it('a failure while it reads the age or saves the plan answer shows Retry, then the plan screen again', async () => {
+  it('a storage hiccup while it reads the age or saves the plan answer is tried again: one plan screen, no Retry', async () => {
     net.wallets = [claimedEmpty]
     settings.failOnce.add('get:birthYear')
     settings.failOnce.add('set:publikChoice')
@@ -985,9 +1116,42 @@ describe('the gate never freezes', () => {
       },
       openUrl() {},
     })
-    await vi.advanceTimersByTimeAsync(1_000)
+    await vi.advanceTimersByTimeAsync(2_000)
     expect(await run).toMatchObject({ choice: 'own_key', chosenNow: true })
-    expect(screens.map((s) => s.id)).toEqual(['unreachable', 'choose', 'unreachable', 'choose'])
+    expect(screens.map((s) => s.id)).toEqual(['choose'])
     expect(settings.store.get('publikChoice')).toBe('own_key')
+  })
+
+  it('"Transaction aborted" (iOS paused the web view under the sign-in sheet): no raw text; the gate sees the claim and goes on', async () => {
+    // The person signed in while the sheet was open, then closed it by hand: the next storage read is aborted once.
+    net.wallets = [anonymous]
+    const { ui, screens } = scriptedUI({ [WORDS.title]: 'wait' })
+    void ensureSignedIn(ui)
+    await vi.advanceTimersByTimeAsync(10)
+    settings.store.set('birthYear', '1990')
+    net.wallets = [claimedPlan]
+    settings.failOnce.add('get:publikClaimState')
+    settings.failOnce.add('set:publikClaimState')
+    native.browserFinished!()
+    await vi.advanceTimersByTimeAsync(3_000)
+    expect(JSON.stringify(screens)).not.toMatch(/Transaction aborted|database is closed/i)
+    expect(screens.map((s) => s.id)).not.toContain('unreachable')
+    expect(screens.at(-1)!.title).toBe(WORDS.connectTitle)
+  })
+
+  it('storage that keeps failing shows fixed words with Retry, never the raw error', async () => {
+    const aborted = () => Object.assign(new Error('Transaction aborted'), { name: 'AbortError' })
+    expect(storageHiccup(aborted())).toBe(true)
+    expect(storageHiccup(new Error('This key is not valid.'))).toBe(false)
+    expect(problemText(aborted())).toBe(STORAGE_PROBLEM)
+    expect(problemText(new Error('Something odd: 0x1f'))).toBeUndefined()
+    expect(STORAGE_PROBLEM).toBe('Lunara could not read its data on this phone. Tap Retry.')
+    settings.failAlways = 'get:publikClaimState' // the read fails every time
+    const { ui, screens } = retryingUI()
+    void ensureSignedIn(ui)
+    await vi.advanceTimersByTimeAsync(1_500)
+    settings.failAlways = ''
+    expect(screens[0]).toMatchObject({ id: 'unreachable', body: STORAGE_PROBLEM, buttons: [{ action: 'retry', label: 'Retry' }] })
+    expect(JSON.stringify(screens)).not.toContain('database is closed')
   })
 })

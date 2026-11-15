@@ -124,6 +124,9 @@ type Draft = {
   sleepGoals: string[]
 }
 
+/** Shown in an empty date row (iOS draws an empty date field as a blank; blind test L2). */
+const ADD_DATE = 'Add date'
+
 const GOALS: Array<{ id: Goal; icon: string; label: string; detail: string }> = [
   { id: 'cycle', icon: '◒', label: 'Understand my cycle', detail: 'Periods, body patterns, and what changes over time' },
   { id: 'ttc', icon: '✦', label: 'Try to conceive', detail: 'A cautious fertile window with OPK and temperature context' },
@@ -1059,7 +1062,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
     const regularityOptions: Array<{ id: CycleRegularity; label: string; detail: string }> = [
       { id: 'regular', label: 'Usually predictable', detail: 'The gap is roughly similar, though it does not need to be exactly the same.' },
       { id: 'irregular', label: 'Often unpredictable', detail: 'Lunara will show wider ranges and avoid pretending there is one exact day.' },
-      { id: 'unsure', label: 'I’m not sure yet', detail: 'That is enough to start. Your prospective history matters more than a guess.' },
+      { id: 'unsure', label: 'I’m not sure yet', detail: 'That is enough to start. The periods you log from now on matter more than a guess.' },
     ]
     return (
       <Frame {...frameProps} chapter="Cycle context" onSkip={() => { patch({ dateConfidence: 'unknown' }); next() }}>
@@ -1115,19 +1118,23 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
           {draft.periodStarts.map((date, index) => (
             <label key={index}>
               <span>{index === 0 ? 'Most recent' : index === 1 ? 'One before' : 'Two before'}</span>
-              <input
-                type="date"
-                max={localToday()}
-                value={date}
-                onChange={(event) => {
-                  const periodStarts: Draft['periodStarts'] = [...draft.periodStarts]
-                  periodStarts[index] = event.target.value
-                  patch({
-                    periodStarts,
-                    dateConfidence: event.target.value ? 'known' : draft.dateConfidence,
-                  })
-                }}
-              />
+              <div className="ob-date-input">
+                <input
+                  type="date"
+                  className={date ? undefined : 'is-empty'}
+                  max={localToday()}
+                  value={date}
+                  onChange={(event) => {
+                    const periodStarts: Draft['periodStarts'] = [...draft.periodStarts]
+                    periodStarts[index] = event.target.value
+                    patch({
+                      periodStarts,
+                      dateConfidence: event.target.value ? 'known' : draft.dateConfidence,
+                    })
+                  }}
+                />
+                {!date && <em className="ob-date-empty" aria-hidden="true">{ADD_DATE}</em>}
+              </div>
             </label>
           ))}
         </div>
@@ -1217,18 +1224,22 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         <div className="ob-date-card single">
           <label>
             <span>{datingLabel}</span>
-            <input
-              type="date"
-              min={draft.pregnancyDatingMethod === 'clinician-edd' ? localToday() : undefined}
-              max={draft.pregnancyDatingMethod === 'clinician-edd' ? undefined : localToday()}
-              value={draft.pregnancyDatingDate}
-              onChange={(event) =>
-                patch({
-                  pregnancyDatingDate: event.target.value,
-                  dateConfidence: event.target.value ? 'known' : 'unknown',
-                })
-              }
-            />
+            <div className="ob-date-input">
+              <input
+                type="date"
+                className={draft.pregnancyDatingDate ? undefined : 'is-empty'}
+                min={draft.pregnancyDatingMethod === 'clinician-edd' ? localToday() : undefined}
+                max={draft.pregnancyDatingMethod === 'clinician-edd' ? undefined : localToday()}
+                value={draft.pregnancyDatingDate}
+                onChange={(event) =>
+                  patch({
+                    pregnancyDatingDate: event.target.value,
+                    dateConfidence: event.target.value ? 'known' : 'unknown',
+                  })
+                }
+              />
+              {!draft.pregnancyDatingDate && <em className="ob-date-empty" aria-hidden="true">{ADD_DATE}</em>}
+            </div>
           </label>
         </div>
         <h2 className="ob-subquestion">How many babies are you expecting?</h2>
@@ -1303,7 +1314,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         <QuestionIntro
           eyebrow="A baseline, not a diagnosis"
           title="What are you noticing today?"
-          body="This seeds your first check-in. Lunara only calls something a pattern after it repeats across prospectively tracked cycles."
+          body="This seeds your first check-in. Lunara only calls something a pattern after it repeats across cycles you track from now on."
         />
         <ChipGrid options={SYMPTOM_OPTIONS} values={draft.baselineSymptoms} exclusive="none" onToggle={(id) => toggle('baselineSymptoms', id, 'none')} />
         <div className="ob-why">
@@ -1569,7 +1580,8 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
           <span aria-hidden="true">i</span>
           <p>Conditions and baseline symptoms only tailor caution, logging, and education. They do not generate a condition result.</p>
         </div>
-        <button className="cta" onClick={next}>Continue to optional AI</button>
+        {/* On a phone the AI step is not part of onboarding (the publik gate asks later): the label says where the button goes (blind test L4). */}
+        <button className="cta" onClick={next}>{steps.includes('ai') ? 'Continue to optional AI' : 'Continue'}</button>
       </Frame>
     )
   }
@@ -1597,7 +1609,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
           <OptionCard
             option={{
               id: 'anthropic',
-              icon: '✳',
+              icon: '\u2733\uFE0E', // text style, not the colour emoji (one icon style; blind test L8)
               label: 'Anthropic',
               detail: claudeSubscriptionTokensAllowed()
                 ? 'An API key, or a token from `claude setup-token` to use your Claude subscription.'

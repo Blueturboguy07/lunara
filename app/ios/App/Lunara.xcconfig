@@ -7,8 +7,8 @@
 // and src/lib/nativeVersion.test.ts fails when they differ.
 // An upload to App Store Connect needs a higher build number each time:
 // raise "buildNumber" in package.json and CURRENT_PROJECT_VERSION here.
-MARKETING_VERSION = 0.2.5
-CURRENT_PROJECT_VERSION = 5
+MARKETING_VERSION = 0.2.6
+CURRENT_PROJECT_VERSION = 6
 
 // The name under the icon. Info.plist reads it as $(APP_DISPLAY_NAME); the
 // widget shows "$(APP_DISPLAY_NAME) Cycle".

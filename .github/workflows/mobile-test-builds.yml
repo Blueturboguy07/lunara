@@ -20,6 +20,9 @@
 # The publik app token comes from the PUBLIK_APP_TOKEN secret at build time
 # (VITE_PUBLIK_APP_TOKEN); every job fails when the secret is empty. It is never printed.
 #
+# The iOS required-gate job also proves that the sign-in sheet closes by itself
+# (.github/scripts/ios-sheet-test.sh with the fake publik .github/scripts/fake-publik.mjs).
+#
 # The test hooks of these builds (a fake publik on this computer only):
 #   iOS:     SIMCTL_CHILD_PUBLIK_SELF_TEST=1 xcrun simctl launch <device> app.lunara.mobile
 #            xcrun simctl launch <device> app.lunara.mobile -PUBLIK_API_BASE_URL http://127.0.0.1:8787/api/v1
@@ -292,6 +295,7 @@ jobs:
           sys.exit("no iPhone simulator")
           ')
           echo "Simulator: $UDID"
+          echo "UDID=$UDID" >> "$GITHUB_ENV"
           xcrun simctl boot "$UDID" || true
           xcrun simctl bootstatus "$UDID" -b
           echo "Booted: $(date -u +%T)"
@@ -333,3 +337,11 @@ jobs:
               exit 1
               ;;
           esac
+
+      # The in-app sign-in sheet closes by itself within 5 s of the claim, while it covers the
+      # web view (whose timers stop): a fake publik on this computer says "claimed" 20 s after
+      # the sheet opened. Required gate only (the optional build has no wall at start).
+      - name: Sign-in sheet closes by itself after the claim (fake publik on this computer)
+        if: matrix.gate_mode == 'required'
+        timeout-minutes: 8
+        run: bash .github/scripts/ios-sheet-test.sh

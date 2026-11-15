@@ -38,8 +38,8 @@
 }
 
 .health-icon-button {
-  width: 40px;
-  height: 40px;
+  width: 44px;
+  height: 44px;
   border: 1px solid var(--health-line);
   border-radius: 50%;
   display: grid;
@@ -555,7 +555,7 @@
 }
 
 .health-tab {
-  min-height: 38px;
+  min-height: 44px;
   border-radius: 12px;
   background: transparent;
   color: var(--health-soft-ink);
@@ -875,8 +875,8 @@
 }
 
 .health-sort-button {
-  width: 34px;
-  height: 34px;
+  width: 44px;
+  height: 44px;
   display: grid;
   place-items: center;
   border: 1px solid var(--health-line);
@@ -890,11 +890,19 @@
 }
 
 .health-toggle {
+  position: relative;
   width: 45px;
   height: 27px;
   padding: 3px;
   border-radius: 99px;
   background: #ded6d9;
+}
+
+/* The switch looks small; its tap area is 45 px high (blind test L1). */
+.health-toggle::before {
+  content: '';
+  position: absolute;
+  inset: -9px 0;
 }
 
 .health-toggle::after {

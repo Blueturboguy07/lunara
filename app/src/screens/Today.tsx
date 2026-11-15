@@ -70,6 +70,7 @@ function phaseFor(
   daysToOvulation: number | null,
   uncertaintyDays: number,
   stale = false,
+  flowLogged = false,
 ): PhaseHero {
   // A months-old period start tells us how long tracking lapsed, not where the
   // cycle is. Ask for a fresh date instead of counting across the gap.
@@ -81,7 +82,8 @@ function phaseFor(
       body: 'It has been a while since a period was logged, so Lunara paused its estimates. Add your most recent period to restart them.',
     }
   }
-  if (cycleDay && cycleDay <= 5) {
+  // A day with logged flow is a period day, also after day 5 (blind test L3).
+  if (cycleDay && (flowLogged || cycleDay <= 5)) {
     return {
       tone: 'period',
       eyebrow: 'Period:',
@@ -101,7 +103,7 @@ function phaseFor(
     return {
       tone: 'fertile',
       eyebrow: 'Estimated fertile window',
-      title: `Ovulation in ${daysToOvulation} ${daysToOvulation === 1 ? 'day' : 'days'}`,
+      title: `Estimated ovulation in about ${daysToOvulation} ${daysToOvulation === 1 ? 'day' : 'days'}`,
       body: 'Logging discharge, ovulation tests, and temperature can add useful context.',
     }
   }
@@ -347,7 +349,7 @@ export function Today() {
       const daysToOvulation = data.prediction.ovulationDate
         ? daysBetween(selectedDate, data.prediction.ovulationDate)
         : null
-      const inPeriod = cycleDay != null && cycleDay <= 5
+      const inPeriod = cycleDay != null && (cycleDay <= 5 || Boolean(data.selectedLog?.flow))
       const ovulationToday = daysToOvulation === 0
       snapshot = {
         generatedAt: new Date().toISOString(),
@@ -579,6 +581,7 @@ export function Today() {
     daysToOvulation,
     data.prediction.uncertaintyDays,
     stale,
+    Boolean(data.selectedLog?.flow),
   )
   // A negative countdown means the estimate has passed. Saying "in 0 days"
   // reads as "today"; the honest phrasing is how far past the estimate we are.
@@ -592,7 +595,7 @@ export function Today() {
           : `Estimated period was ${-rawDaysUntil} day${rawDaysUntil === -1 ? '' : 's'} ago`
   const estimate =
     data.goal === 'ttc' && daysToOvulation != null && daysToOvulation >= 0
-      ? `Ovulation estimated in ${daysToOvulation} day${daysToOvulation === 1 ? '' : 's'}`
+      ? `Estimated ovulation in about ${daysToOvulation} day${daysToOvulation === 1 ? '' : 's'}`
       : periodEstimate
   const fertileWindow = data.prediction.fertileWindow
   const insideEstimatedFertileWindow = Boolean(
@@ -657,7 +660,8 @@ export function Today() {
   const cyclePositionInsight: DailyInsight = {
     key: 'cycle-position',
     eyebrow:
-      data.prediction.cycleDay != null && data.prediction.cycleDay <= 5
+      data.prediction.cycleDay != null &&
+      (data.prediction.cycleDay <= 5 || Boolean(data.selectedLog?.flow))
         ? 'Period position'
         : 'Cycle position',
     value:

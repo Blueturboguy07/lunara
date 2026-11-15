@@ -9,9 +9,13 @@
  *     backup (db/transfer.ts). A browser build keeps the key in localStorage;
  *   - requests go through providerFetch (native HTTP on iOS and Android);
  *   - Sign in with publik opens claim_url with in_app=1 (publik's bare in-app page) in the
- *     in-app browser (SFSafariViewController on iOS, a Custom Tab on Android). While the app
+ *     in-app sheet (SFSafariViewController on iOS, a Custom Tab on Android). While the app
  *     is in the foreground it checks GET /wallet every 3 seconds; when the app
- *     comes back from the background, or the browser closes, it checks at once;
+ *     comes back from the background, or the sheet closes, it checks at once.
+ *     iOS: the web view's timers stop while the sheet covers it, so the native shell
+ *     (LunaraNativePlugin.swift, publikSheetOpen) checks GET /wallet itself every 3 s
+ *     on a fixed grid for 10 minutes, each check with an 8 s limit, and closes the sheet
+ *     when publik says the work is done;
  *   - offline, a phone that signed in before goes straight in. Lunara is
  *     local-first: only the first sign-in needs the network.
  *
@@ -35,7 +39,9 @@
  * native build; lib/buildFlags.ts) or `pnpm dev`: PUBLIK_API_BASE_URL (a launch
  * argument, or the build environment) points every call at a fake publik on this
  * computer (127.0.0.1, localhost, or 10.0.2.2 from the Android emulator), and
- * PUBLIK_SELF_TEST prints the self-test line. A release build has neither.
+ * PUBLIK_SELF_TEST prints the self-test line. PUBLIK_TEST_SIGN_IN presses "Sign in with
+ * publik" once by itself and prints "publik sign-in test: passed" when the gate lets the
+ * person in (the CI test that proves the sheet closes by itself). A release build has none.
  * Nothing else changes the gate.
  *
  * The stateful half of publik API for Lunara AI is here too: provisionPublik
@@ -59,6 +65,7 @@ import { forgetChatAgreement } from './healthConsent'
 import { providerFetch } from './providerFetch'
 import { loadStorefront, NO_LINK_PLAN_TEXT, purchaseLinksAllowed } from './storefront'
 import {
+  aiProvidersFrom,
   DEFAULT_PUBLIK_ENDPOINT,
   isAdultBirthYear,
   PublikApiError,
@@ -81,11 +88,16 @@ type FetchLike = typeof fetch
 
 export const APP_SLUG = "lunara"
 /** Mirrors app/package.json `version` and PUBLIK_BUILD.appVersion; publikBuild.test.ts pins all three equal. */
-export const APP_VERSION = "0.2.5"
+export const APP_VERSION = "0.2.6"
 /** Lunara AI (adults only) calls a model, so the gate asks how to pay for it. */
 export const USES_AI = true
 const PUBLIK_ORIGIN = 'https://publikhq.com'
 const POLL_MS = 3_000, POLL_LIMIT_MS = 10 * 60_000
+/** One wallet check of the sign-in or plan wait: its own limit, shorter than the gate's first read. */
+const POLL_CHECK_TIMEOUT_MS = 8_000
+/** A storage read that fails (an iOS web view that was paused aborts IndexedDB work): tries before a screen shows. */
+const STORAGE_TRIES = 3
+const STORAGE_RETRY_MS = 400
 const INSTALL_TIMEOUT_MS = 20_000
 const WALLET_TIMEOUT_MS = 15_000
 /** A phone that signed in before waits this long for publik, then opens offline. */
@@ -107,8 +119,15 @@ export interface Wallet {
 /** 'not_now' exists only on signInOnDemand() screens (PUBLIK_GATE_MODE=optional). */
 export type GateAction = 'sign_in' | 'retry' | 'get_plan' | 'check_plan' | 'connect' | 'own_key' | 'not_now'
 export interface GateScreen { id: 'sign_in' | 'unreachable' | 'choose'; title: string; body: string; note: string | null; buttons: { action: GateAction; label: string }[] }
-/** show(): draw the screen and resolve with the button pressed. When `signal` aborts, stop waiting for a press (the promise may stay pending). */
-export interface GateUI { show(screen: GateScreen, signal: AbortSignal): Promise<GateAction>; openUrl(url: string): unknown }
+/** What the in-app sheet waits for: the sign-in ("claimed") or a plan or pack ("plan"). */
+export type SheetWaitFor = 'claimed' | 'plan'
+/** The wallet check that runs while the sheet is open (iOS: in the native shell). The key is never logged. */
+export interface SheetWatch { walletUrl: string; key: string; until: SheetWaitFor }
+/**
+ * show(): draw the screen and resolve with the button pressed. When `signal` aborts, stop waiting for a press (the promise may stay pending).
+ * openUrl(): open publik's page in the in-app sheet; with `watch`, the sheet closes by itself when publik says the work is done (openPublikSheet).
+ */
+export interface GateUI { show(screen: GateScreen, signal: AbortSignal): Promise<GateAction>; openUrl(url: string, watch?: SheetWatch): unknown }
 export interface GateResult {
   key: string
   wallet: Wallet
@@ -144,12 +163,21 @@ interface LaunchOptions {
   /** The origin of the publik to use (PUBLIK_API_BASE_URL without /api/v1), or null for publikhq.com. */
   baseUrl: string | null
   selfTest: boolean
+  /** Test builds only: press "Sign in with publik" once by itself (the CI sheet test). */
+  testSignIn: boolean
   usageOff: boolean
   debug: boolean
 }
 interface PublikNativeLaunch {
   publikLaunchOptions(): Promise<Record<string, string | undefined>>
   publikSelfTestDone(options: { line: string }): Promise<void>
+  /** Test builds only: print one line for the CI log; the app goes on. */
+  publikTestLine(options: { line: string }): Promise<void>
+  /** iOS: the in-app sheet, owned by the native shell, with its own wallet check (see the top of this file). */
+  publikSheetOpen(options: { url: string } & Partial<SheetWatch>): Promise<void>
+  publikSheetClose(): Promise<void>
+  publikWatchStop(): Promise<void>
+  addListener(event: 'publikSheet', callback: (event: { state: 'done' | 'closed' | 'timeout' }) => void): Promise<{ remove(): Promise<void> }>
 }
 const nativeLaunch = getLunaraNativeBridge<PublikNativeLaunch>()
 
@@ -182,6 +210,7 @@ function launchFrom(values: Record<string, string | undefined>): LaunchOptions {
     // A native launch argument wins; else the build environment (vite.config.ts exposes PUBLIK_API_BASE_URL).
     baseUrl: hooks ? testOrigin(get('PUBLIK_API_BASE_URL') ?? (import.meta.env.PUBLIK_API_BASE_URL as string | undefined)?.trim() ?? null) : null,
     selfTest: hooks && get('PUBLIK_SELF_TEST') !== null,
+    testSignIn: hooks && get('PUBLIK_TEST_SIGN_IN') !== null,
     usageOff: (dnt !== '' && dnt !== '0' && dnt !== 'false') || ['0', 'false', 'off'].includes(usage),
     debug: get('PUBLIK_TELEMETRY_DEBUG') === '1',
   }
@@ -641,16 +670,19 @@ export async function readWallet(key: string, timeoutMs = WALLET_TIMEOUT_MS): Pr
     top_up_url: trustedUrl(b.top_up_url) ?? `${origin()}/wallet`,
     linked_at: typeof b.linked_at === 'string' ? b.linked_at : null,
   }
-  // Remembered for the offline start and for Lunara AI's balance card.
+  // Remembered for the offline start and for Lunara AI's plan line. A failed write (iOS can abort IndexedDB
+  // work while the web view is paused) never hides publik's answer: the next read writes it again.
   await Promise.all([
     setSetting(SK.publikClaimState, wallet.claim_state),
     wallet.claim_url ? setSetting(SK.publikClaimUrl, wallet.claim_url) : wallet.claim_state === 'claimed' ? removeSetting(SK.publikClaimUrl) : Promise.resolve(),
     typeof b.install_id === 'string' && b.install_id ? setSetting(SK.publikInstallId, b.install_id) : Promise.resolve(),
-  ])
+  ]).catch(() => undefined)
   return { status, wallet, message: null }
 }
 
 export interface PublikWallet extends PublikUsage {
+  /** GET /wallet `ai_providers`: the companies publik sends AI requests to; null when publik sent none. */
+  aiProviders: string[] | null
   claimUrl: string | null
   /** The one link an app renders (CONTRACT §1): claim page while anonymous, add-credit page once claimed. */
   topUpUrl: string | null
@@ -685,6 +717,7 @@ export async function fetchPublikWallet(fetchImpl: FetchLike = providerFetch): P
     used_percent?: number | null
     remaining_percent?: number | null
     resets_at?: string | null
+    ai_providers?: unknown
   }
   const claimState: PublikClaimState | null =
     data.claim_state === 'claimed' || data.claim_state === 'anonymous' ? data.claim_state : null
@@ -696,7 +729,7 @@ export async function fetchPublikWallet(fetchImpl: FetchLike = providerFetch): P
     claimState ? setSetting(SK.publikClaimState, claimState) : Promise.resolve(),
     claimUrl ? setSetting(SK.publikClaimUrl, claimUrl) : claimState === 'claimed' ? removeSetting(SK.publikClaimUrl) : Promise.resolve(),
     baseUrl ? setSetting(SK.publikBaseUrl, baseUrl) : Promise.resolve(),
-  ])
+  ]).catch(() => undefined) // a failed write never hides publik's answer; the next read writes it again
   const balance = data.balance_micros ?? data.available_micros ?? null
   return {
     balanceMicros: balance,
@@ -710,6 +743,7 @@ export async function fetchPublikWallet(fetchImpl: FetchLike = providerFetch): P
     usedPercent: percentOrNull(data.used_percent),
     remainingPercent: percentOrNull(data.remaining_percent),
     resetsAt: typeof data.resets_at === 'string' && data.resets_at ? data.resets_at : null,
+    aiProviders: aiProvidersFrom(data.ai_providers),
     claimUrl,
     topUpUrl: trustedUrl(data.top_up_url) ?? claimUrl,
   }
@@ -802,20 +836,22 @@ export function gateScreen(id: GateScreen['id'], w: Wallet | null, note: string 
   // A server message never shows an amount of money (lib/publikApi.ts withoutMoney).
   if (id === 'unreachable') return { id, title: 'Sign in with publik', body: withoutMoney(message) ?? 'publik is not reachable. Check your connection.', note, buttons: [{ action: 'retry', label: 'Retry' }] }
   if (id === 'sign_in') return { id, title: 'Sign in with publik', note, buttons: [{ action: 'sign_in', label: 'Sign in with publik' }],
-    body: 'This app uses your publik account. Click Sign in with publik, then sign in in your browser. This window continues when you are signed in.' }
+    body: 'Lunara uses your publik account. Tap Sign in with publik, then sign in on the publik page. Lunara continues when you are signed in.' }
   // No handle and no balance: the plan screen can show before the PIN lock.
   if (!w || (w.plan.kind === 'none' && w.balance_micros === 0)) {
     // US App Store storefront: "Get a plan" opens publik. Any other or unknown storefront: no link, no button,
-    // no price (lib/storefront.ts); "Connect your plan" reads the account again after a plan is bought elsewhere.
+    // no price (lib/storefront.ts); "Check for my plan" reads the account again after a plan is bought elsewhere.
+    // Each label says what the button does. "Not now" keeps the sign-in; Lunara AI asks again later.
     if (!purchaseLinksAllowed()) return { id, title: 'Choose how to pay for AI', note,
-      body: `You are signed in to publik. This app uses AI. ${NO_LINK_PLAN_TEXT} Then click Connect your plan. Or use your own key.`,
-      buttons: [{ action: 'check_plan', label: 'Connect your plan' }, { action: 'own_key', label: 'Use my own key' }] }
+      body: `You are signed in to publik. Lunara AI needs a publik plan or your own AI key. ${NO_LINK_PLAN_TEXT} Then tap Check for my plan.`,
+      buttons: [{ action: 'check_plan', label: 'Check for my plan' }, { action: 'own_key', label: 'Use my own AI key' }, { action: 'not_now', label: 'Not now' }] }
     return { id, title: 'Choose how to pay for AI', note,
-      body: 'You are signed in to publik. This app uses AI. Get a publik plan, or use your own key.', buttons: [{ action: 'get_plan', label: 'Get a plan' }, { action: 'own_key', label: 'Use my own key' }] }
+      body: 'You are signed in to publik. Lunara AI needs a publik plan or your own AI key.',
+      buttons: [{ action: 'get_plan', label: 'Get a plan' }, { action: 'own_key', label: 'Use my own AI key' }, { action: 'not_now', label: 'Not now' }] }
   }
   const what = w.plan.kind === 'plan' ? 'You have a publik plan.' : 'You have publik credit.'
-  return { id, title: 'Connect your plan', note, body: `You are signed in to publik. ${what} Connect it to use AI in this app, or use your own key.`,
-    buttons: [{ action: 'connect', label: 'Connect your plan' }, { action: 'own_key', label: 'Use my own key' }] }
+  return { id, title: 'Connect your plan', note, body: `You are signed in to publik. ${what} Use it for Lunara AI, or use your own AI key.`,
+    buttons: [{ action: 'connect', label: 'Use my publik plan' }, { action: 'own_key', label: 'Use my own AI key' }, { action: 'not_now', label: 'Not now' }] }
 }
 
 // The app is in the foreground: only then does the gate call publik. Coming back wakes the wait at once.
@@ -856,6 +892,7 @@ function watchForeground(): void {
     NativeApp.addListener('appStateChange', ({ isActive }) => setForeground(isActive)).catch(() => undefined)
     // iOS: Done in SFSafariViewController. Android: the Custom Tab closed.
     Browser.addListener('browserFinished', () => wake()).catch(() => undefined)
+    watchSheetEvents()
   } else if (typeof document !== 'undefined') {
     document.addEventListener('visibilitychange', () => setForeground(document.visibilityState === 'visible'))
   }
@@ -863,20 +900,72 @@ function watchForeground(): void {
 
 /** iOS shows the sign-in page in the app (SFSafariViewController): close it once publik says the work is done. */
 function closeBrowser(): void {
-  if (isNative && nativePlatform === 'ios') Browser.close().catch(() => undefined)
+  if (!isNative || nativePlatform !== 'ios') return
+  void Promise.resolve()
+    .then(() => nativeLaunch.publikSheetClose())
+    .catch(() => undefined)
+  Browser.close().catch(() => undefined)
 }
 
-/** Show a screen; with `until`, also check GET /wallet every 3 s in the foreground, for at most 10 minutes of waiting. "done": the check saw it; "timeout": it did not. */
-async function ask(ui: GateUI, screen: GateScreen, key?: string, until?: (w: Wallet) => boolean): Promise<GateAction | 'done' | 'timeout'> {
+/** The wallet check for the in-app sheet: GET /wallet on this publik with this key. */
+function sheetWatch(key: string, until: SheetWaitFor): SheetWatch {
+  return { walletUrl: `${origin()}/api/v1/wallet`, key, until }
+}
+
+/**
+ * Opens publik's page in the in-app sheet. iOS: the native shell shows it and, with `watch`,
+ * checks GET /wallet itself every 3 s (8 s limit per check, 10 minutes at most) and closes the
+ * sheet when publik says the work is done, because the web view's timers stop while the sheet
+ * covers it. Android: a Custom Tab (the gate checks at once when the app comes back). A browser
+ * build: a new tab.
+ */
+export function openPublikSheet(url: string, watch?: SheetWatch): void {
+  if (isNative && nativePlatform === 'ios') {
+    void Promise.resolve()
+      .then(() => nativeLaunch.publikSheetOpen({ url, ...(watch ?? {}) }))
+      .catch(() => Browser.open({ url }).catch(() => undefined))
+    return
+  }
+  if (isNative) {
+    void Browser.open({ url }).catch(() => undefined)
+    return
+  }
+  globalThis.open?.(url, '_blank', 'noopener,noreferrer')
+}
+
+/** iOS: the native sheet tells the gate when it closed (by itself or by hand), so the gate checks at once. */
+let sheetEvents: Promise<unknown> | null = null
+function watchSheetEvents(): void {
+  if (sheetEvents || !isNative || nativePlatform !== 'ios') return
+  sheetEvents = Promise.resolve()
+    .then(() => nativeLaunch.addListener('publikSheet', () => wake()))
+    .catch(() => undefined)
+}
+
+/** True when the wallet shows what the wait is for. */
+function walletDone(w: Wallet, until: SheetWaitFor): boolean {
+  return until === 'claimed' ? w.claim_state === 'claimed' : w.plan.kind !== 'none' || w.balance_micros > 0
+}
+
+/**
+ * Show a screen; with `until`, also check GET /wallet every 3 s on a fixed grid in the foreground (8 s limit per
+ * check), for at most 10 minutes of waiting. "done": the check saw it; "timeout": it did not. Coming back to the
+ * foreground, and the sheet closing (by itself or by hand), check at once.
+ */
+async function ask(ui: GateUI, screen: GateScreen, key?: string, until?: SheetWaitFor): Promise<GateAction | 'done' | 'timeout'> {
   const stop = new AbortController()
   const poll = async (): Promise<'done' | 'timeout'> => {
-    const end = Date.now() + POLL_LIMIT_MS
+    const start = Date.now()
+    const end = start + POLL_LIMIT_MS
+    let tick = 0
     while (!stop.signal.aborted) {
-      await nap(POLL_MS, stop.signal)
+      // The next point of the 3-second grid (a slow check skips the points it covered).
+      tick = Math.max(tick + 1, Math.ceil((Date.now() - start) / POLL_MS))
+      await nap(Math.max(0, start + tick * POLL_MS - Date.now()), stop.signal)
       if (stop.signal.aborted) break
       if (!foreground) continue // nothing is sent in the background; coming back wakes the nap
-      const w = await readWallet(key!).then((r) => r.wallet, () => null)
-      if (w && until!(w)) return 'done'
+      const w = await readWallet(key!, POLL_CHECK_TIMEOUT_MS).then((r) => r.wallet, () => null)
+      if (w && walletDone(w, until!)) return 'done'
       if (Date.now() >= end) return 'timeout' // only after one more check in the foreground
     }
     return 'timeout'
@@ -965,6 +1054,8 @@ export async function needsSignInOnDemand(): Promise<boolean> {
 
 /** The note when publik gave no claim_url: the app opens no other page instead. */
 export const NO_SIGN_IN_LINK = 'publik sent no sign-in link. Try again.'
+/** The note while the sign-in page is open. */
+export const SIGN_IN_WAITING = 'Waiting for you to sign in on the publik page.'
 
 /** The sign-in page for the in-app sheet: claim_url with in_app=1. Every other query value stays as it is. */
 export function inAppClaimUrl(claimUrl: string): string {
@@ -1030,9 +1121,54 @@ export function deletePublikDataOnThisPhone(fetchImpl: FetchLike = providerFetch
   return signOutHere(fetchImpl, { ...options, forgetTelemetryId: true })
 }
 
-/** The words of an unexpected error on the "not reachable" screen. */
-function errorText(error: unknown): string | undefined {
-  return error instanceof Error && error.message.trim() ? error.message.trim() : undefined
+/** The words when this phone's own storage fails more than STORAGE_TRIES times in a row (never the raw error). */
+export const STORAGE_PROBLEM = 'Lunara could not read its data on this phone. Tap Retry.'
+/** The words when the iPhone is still locked and the key cannot be read yet. */
+export const PHONE_LOCKED = 'Unlock your iPhone, then tap Retry.'
+
+/**
+ * A storage failure that a second try fixes: IndexedDB work that iOS aborted while the web view was
+ * paused ("Transaction aborted"), a closed or lost database connection, or an inactive transaction.
+ */
+export function storageHiccup(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false
+  const { name, message } = error as { name?: unknown; message?: unknown }
+  if (typeof name === 'string' && ['AbortError', 'DatabaseClosedError', 'TransactionInactiveError', 'InvalidStateError', 'UnknownError', 'OpenFailedError'].includes(name)) return true
+  return typeof message === 'string' && /transaction|database|indexeddb|idb/i.test(message)
+}
+
+/**
+ * The words of an unexpected failure on the "not reachable" screen: publik's own sentence for a publik
+ * error (never with money), fixed words for anything else. A raw error text never shows.
+ */
+export function problemText(error: unknown): string | undefined {
+  if (error instanceof PublikApiError) return error.kind === 'unreachable' ? undefined : withoutMoney(error.message) ?? undefined
+  if (vaultLocked(error)) return PHONE_LOCKED
+  if (storageHiccup(error)) return STORAGE_PROBLEM
+  return undefined
+}
+
+function pause(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** One storage step, tried again after a storage hiccup (each try is its own short IndexedDB transaction). */
+async function retryStorage<T>(step: () => Promise<T>): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await step()
+    } catch (error) {
+      if (!storageHiccup(error) || attempt >= STORAGE_TRIES) throw error
+      await pause(STORAGE_RETRY_MS)
+    }
+  }
+}
+
+/** PUBLIK_TEST_SIGN_IN (test builds only): one line in the CI log when the gate lets the person in. */
+function testLine(line: string): void {
+  if (!launch.testSignIn) return
+  console.log(line)
+  if (isNative) void Promise.resolve().then(() => nativeLaunch.publikTestLine({ line })).catch(() => undefined)
 }
 
 async function gateLoop(ui: GateUI, notNow: boolean): Promise<GateResult | null> {
@@ -1044,8 +1180,18 @@ async function gateLoop(ui: GateUI, notNow: boolean): Promise<GateResult | null>
   const offer = (screen: GateScreen): GateScreen => (notNow ? { ...screen, buttons: [...screen.buttons, { action: 'not_now', label: 'Not now' }] } : screen)
   let signNote: string | null = null, signPoll = true, planNote: string | null = null, planPoll = false, chosenNow = false
   let revokedInARow = 0
+  let storageFailures = 0
+  // PUBLIK_TEST_SIGN_IN (test builds only): the first "Sign in with publik" is pressed by itself.
+  let autoSignIn = launch.testSignIn
+  const done = (result: GateResult): GateResult => {
+    // iOS: the sheet's own wallet check has nothing more to wait for.
+    if (isNative && nativePlatform === 'ios') void Promise.resolve().then(() => nativeLaunch.publikWatchStop()).catch(() => undefined)
+    testLine(`publik sign-in test: passed ${APP_SLUG} ${APP_VERSION}`)
+    return result
+  }
   for (;;) {
     // Never freeze: any unexpected error (the vault, the database, a screen) shows "not reachable" with Retry.
+    // A storage hiccup (iOS aborts IndexedDB work while the web view is paused) is tried again first, without a screen.
     try {
       let c: PublikCredential | null = null
       let r: Awaited<ReturnType<typeof readWallet>>
@@ -1059,11 +1205,17 @@ async function gateLoop(ui: GateUI, notNow: boolean): Promise<GateResult | null>
         // Offline after the first sign-in: Lunara opens on this phone's last answer from publik.
         if (offline && c && signedInBefore) {
           startTelemetry()
-          return { key: c.key, wallet: offlineWallet(), choice: c.choice, chosenNow: false, offline: true }
+          return done({ key: c.key, wallet: offlineWallet(), choice: c.choice, chosenNow: false, offline: true })
         }
-        if ((await ask(ui, offer(gateScreen('unreachable', null, null, offline ? undefined : e instanceof Error ? e.message : String(e))))) === 'not_now') return null
+        if (storageHiccup(e) && ++storageFailures < STORAGE_TRIES) {
+          await pause(STORAGE_RETRY_MS)
+          continue
+        }
+        storageFailures = 0
+        if ((await ask(ui, offer(gateScreen('unreachable', null, null, problemText(e))))) === 'not_now') return null
         continue
       }
+      storageFailures = 0
       if (r.status === 401) {
         // A revoked key: provision again. A new key that is refused at once too: wait for Retry, never loop on publik.
         if (++revokedInARow >= 2 && (await ask(ui, offer(gateScreen('unreachable', null, null, r.message ?? undefined)))) === 'not_now') return null
@@ -1076,21 +1228,23 @@ async function gateLoop(ui: GateUI, notNow: boolean): Promise<GateResult | null>
         // publik is up but failing (5xx, 429): a phone that signed in before still opens.
         if ((r.status >= 500 || r.status === 429) && signedInBefore) {
           startTelemetry()
-          return { key: c.key, wallet: offlineWallet(), choice: c.choice, chosenNow: false, offline: true }
+          return done({ key: c.key, wallet: offlineWallet(), choice: c.choice, chosenNow: false, offline: true })
         }
         if ((await ask(ui, offer(gateScreen('unreachable', null, null, r.message ?? undefined)))) === 'not_now') return null
         continue
       }
       if (w.claim_state !== 'claimed') {
-        const a = await ask(ui, offer(gateScreen('sign_in', w, signNote)), c.key, signPoll ? (x) => x.claim_state === 'claimed' : undefined)
+        const a = autoSignIn ? 'sign_in' : await ask(ui, offer(gateScreen('sign_in', w, signNote)), c.key, signPoll ? 'claimed' : undefined)
+        autoSignIn = false
         if (a === 'not_now') return null
         if (a === 'sign_in') {
           // Only publik's sign-in link, never another publik page: without one, say so and wait for another try.
+          // The sheet closes by itself when publik says "claimed" (iOS: the native shell checks while it is open).
           const link = w.claim_url ?? c.claim_url
-          if (link) { ui.openUrl(inAppClaimUrl(link)); signNote = 'Waiting for you to sign in in your browser.'; signPoll = true }
+          if (link) { ui.openUrl(inAppClaimUrl(link), sheetWatch(c.key, 'claimed')); signNote = SIGN_IN_WAITING; signPoll = true }
           else { signNote = NO_SIGN_IN_LINK; signPoll = false }
         }
-        if (a === 'timeout') { signNote = 'No sign-in after 10 minutes. Click Sign in with publik to try again.'; signPoll = false }
+        if (a === 'timeout') { signNote = 'No sign-in after 10 minutes. Tap Sign in with publik to try again.'; signPoll = false }
         if (a === 'done') closeBrowser()
         continue
       }
@@ -1099,27 +1253,34 @@ async function gateLoop(ui: GateUI, notNow: boolean): Promise<GateResult | null>
       let choice: Choice | null = asksAi ? c.choice : null
       if (asksAi && !choice) {
         if (w.plan.kind !== 'none' || w.balance_micros > 0) { planNote = null; planPoll = false } // the plan is there: Connect your plan
-        const a = await ask(ui, offer(gateScreen('choose', w, planNote)), c.key, planPoll ? (x) => x.plan.kind !== 'none' || x.balance_micros > 0 : undefined)
+        // The plan screen always has "Not now" (gateScreen): it is a choice, not the sign-in wall.
+        const a = await ask(ui, gateScreen('choose', w, planNote), c.key, planPoll ? 'plan' : undefined)
         planNote = null; planPoll = false
         if (a === 'not_now') {
           // Signed in, no answer yet: Lunara asks again the next time.
           startTelemetry()
-          return { key: c.key, wallet: w, choice: null, chosenNow: false, offline: false }
+          return done({ key: c.key, wallet: w, choice: null, chosenNow: false, offline: false })
         }
-        if (a === 'get_plan') { ui.openUrl(w.top_up_url); planNote = 'Waiting for your plan. Finish in your browser.'; planPoll = true }
+        if (a === 'get_plan') { ui.openUrl(w.top_up_url, sheetWatch(c.key, 'plan')); planNote = 'Waiting for your plan. Finish on the publik page.'; planPoll = true }
         // No purchase link here: read the account again. With a plan, the next screen is Connect your plan.
         if (a === 'check_plan') planNote = `No plan on your publik account yet. ${NO_LINK_PLAN_TEXT}`
-        if (a === 'timeout') planNote = 'No plan after 10 minutes. Click Get a plan to try again.'
+        if (a === 'timeout') planNote = 'No plan after 10 minutes. Tap Get a plan to try again.'
         if (a === 'done') closeBrowser()
         if (a !== 'connect' && a !== 'own_key') continue // "done": the plan is there; the next screen is Connect your plan
         choice = a === 'connect' ? 'publik' : 'own_key'
-        await setChoice(choice)
+        const chosen = choice
+        await retryStorage(() => setChoice(chosen))
         chosenNow = true
       }
       startTelemetry()
-      return { key: c.key, wallet: w, choice, chosenNow, offline: false }
+      return done({ key: c.key, wallet: w, choice, chosenNow, offline: false })
     } catch (e) {
-      if ((await ask(ui, offer(gateScreen('unreachable', null, null, errorText(e))))) === 'not_now') return null
+      if (storageHiccup(e) && ++storageFailures < STORAGE_TRIES) {
+        await pause(STORAGE_RETRY_MS)
+        continue
+      }
+      storageFailures = 0
+      if ((await ask(ui, offer(gateScreen('unreachable', null, null, problemText(e))))) === 'not_now') return null
     }
   }
 }

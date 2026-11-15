@@ -93,7 +93,8 @@ iOS and Android projects. **Re-run it after every code change** — the native
 shells load a copied bundle, not your live source.
 
 **AI assistant.** Lunara AI runs on **publik API** by default: no key needed.
-It uses your publik plan. The app never shows an amount of money for AI use.
+It uses your publik plan; linking your publik account gives some free use to
+try it. The app never shows an amount of money for AI use.
 It shows only the share of the plan limit you used, with a bar, for example
 "62% of your plan used · resets Monday" (from `used_percent`,
 `remaining_percent` and `resets_at` of `GET /api/v1/wallet`, else from the
@@ -195,7 +196,8 @@ When it is on, answers come from one of three places:
 
 - **publik API** (default) — no key needed. The app mints its own per-phone
   key from publik on first launch, after you accept the disclosure, and keeps
-  it in the iOS Keychain / Android Keystore. AI use counts against your publik
+  it in the iOS Keychain / Android Keystore. Linking your publik account gives
+  some free use to try it. After that, AI use counts against your publik
   plan and shows as a percent of the plan limit, never as money. Until the
   phone is linked (or you add your own key), the assistant says that the phone
   is not linked to a publik plan yet. Disconnect at any time from Settings.
@@ -298,6 +300,14 @@ fails when they differ.
     Android: `--es PUBLIK_SELF_TEST 1`). The app prints `publik self-test: ok
     lunara <version>` after a real wallet check and exits. CI runs it in the iOS
     simulator and in an Android emulator.
+  - `PUBLIK_TEST_SIGN_IN=1` (iOS simulator: `SIMCTL_CHILD_PUBLIK_TEST_SIGN_IN=1`).
+    The gate taps "Sign in with publik" once by itself, and the app prints
+    `publik sheet: opened`, `publik sheet: closed by the app` and `publik
+    sign-in test: passed lunara <version>`. CI runs
+    `.github/scripts/ios-sheet-test.sh` with a fake publik
+    (`.github/scripts/fake-publik.mjs`) that says "claimed" 20 seconds after
+    the sign-in sheet opened. The test fails when the sheet does not close by
+    itself within 5 seconds of the claim.
 - **Delete account.** Settings → Danger zone → Delete account says what is
   deleted (the publik account, for all publik apps), deletes Lunara's publik
   data on this phone, asks separately before it deletes cycle data, then opens
@@ -317,8 +327,8 @@ fails when they differ.
   Lunara shows the screen "AI chat is optional". On publik API it says: "To
   answer you, Lunara sends your question and an anonymized summary of your
   cycle data to publik (publikhq.com). publik sends it to the AI provider that
-  answers (for example Anthropic, Google or OpenAI). It has no name, email or
-  birth date. publik does not store the content of your messages or answers, and does not use it
+  answers: <the companies that publik names, or no names when publik sends no
+  list>. It has no name, email or birth date. publik does not store the content of your messages or answers, and does not use it
   for ads, analytics, training, or sale. It keeps billing records (model, token
   counts, cost) without content. The AI provider processes your message to
   answer it, under its own terms." With your own key (Anthropic, OpenAI, or an

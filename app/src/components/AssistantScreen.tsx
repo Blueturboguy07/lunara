@@ -26,7 +26,7 @@ import {
 } from '../lib/assistantContext'
 import { screenAssistantUrgency } from '../lib/assistantSafety'
 import { gateMode } from '../lib/buildFlags'
-import { chatDestination, historyForSend, NEW_CHAT_NOTICE } from '../lib/chatHistory'
+import { CHAT_NOT_SAVED, chatDestination, historyForSend, NEW_CHAT_NOTICE } from '../lib/chatHistory'
 import {
   agreeToChat,
   CHAT_AGREEMENT_ACCEPT,
@@ -50,7 +50,7 @@ import {
   markPublikCardSeen,
   provisionPublik,
   PUBLIK_BUILD,
-  PUBLIK_DATA_PATH,
+  publikDataPath,
   PUBLIK_MODELS,
   PUBLIK_PLAN_SENTENCE,
   notLinkedText,
@@ -58,6 +58,7 @@ import {
   planUseFrom,
   publikAvailable,
   publikEndpoint,
+  publikErrorLinkLabel,
   publikLinkButtonLabel,
   publikLocalState,
   publikStatusLine,
@@ -81,6 +82,7 @@ import {
   setSecureSecret,
 } from '../native/secureVault'
 import { NO_LINK_PLAN_TEXT } from '../lib/storefront'
+import { ChatMarkdown } from './ChatMarkdown'
 import { PlanUseMeter } from './PlanUseMeter'
 import { useApp } from '../state/appStore'
 import { LunaraMark } from './LunaraMark'
@@ -158,6 +160,8 @@ export function AssistantScreen() {
   const [chatAsk, setChatAsk] = useState<{ text: string | null; destination: HealthDestination } | null>(null)
   // "Report this answer" (App Store rule 1.2): the answer whose reason picker is open.
   const [reportingAnswer, setReportingAnswer] = useState<number | null>(null)
+  // GET /wallet `ai_providers`: the true companies behind publik API, named on the agreement screen.
+  const [aiProviders, setAiProviders] = useState<string[] | null>(null)
   const subscriptionTokens = claudeSubscriptionTokensAllowed()
   // Purchase links, buttons and prices: US App Store storefront only (lib/storefront.ts).
   const purchaseLinks = usePurchaseLinks()
@@ -170,6 +174,7 @@ export function AssistantScreen() {
     try {
       const wallet = await fetchPublikWallet()
       setPublikUsage(wallet)
+      setAiProviders(wallet.aiProviders)
       if (wallet.claimState) setClaimState(wallet.claimState)
       if (wallet.claimUrl) setClaimUrl(wallet.claimUrl)
       return wallet
@@ -292,7 +297,7 @@ export function AssistantScreen() {
   useEffect(() => {
     if (loading || setupOpen || !apiKey) return
     let alive = true
-    const destination = healthDestination(provider, baseUrl)
+    const destination = healthDestination(provider, baseUrl, aiProviders)
     void chatAgreementNeeded(destination, selectedHealthKinds(consent)).then((needed) => {
       if (alive && needed) setChatAsk((ask) => ask ?? { text: null, destination })
     })
@@ -495,7 +500,7 @@ export function AssistantScreen() {
     const safetyIntercept = screenAssistantUrgency(text)
     if (!safetyIntercept && !agreed) {
       // Nothing goes to a provider before "Turn on AI chat" for that provider and every ticked category.
-      const destination = healthDestination(provider, baseUrl)
+      const destination = healthDestination(provider, baseUrl, aiProviders)
       if (await chatAgreementNeeded(destination, selectedHealthKinds(consent))) {
         setChatAsk({ text, destination })
         return
@@ -575,12 +580,13 @@ export function AssistantScreen() {
   }
 
   function publikErrorAction(failure: PublikApiError): { label: string; run: () => void } | null {
+    // "Add a plan or pack": US App Store storefront only; an unknown storefront gets no button (lib/storefront.ts).
+    const linkLabel = publikErrorLinkLabel(failure, claimState, purchaseLinks)
     switch (failure.kind) {
       case 'needs_credit':
-        if (!purchaseLinks) return null
-        return failure.link ? { label: claimState === 'claimed' ? 'Add a plan or pack' : 'Link this phone & pick a plan', run: () => openPublikLink(failure.link as string) } : null
+        return linkLabel ? { label: linkLabel, run: () => openPublikLink(failure.link as string) } : null
       case 'rate_limited':
-        return failure.link && purchaseLinks ? { label: publikLinkButtonLabel(claimState), run: () => openPublikLink(failure.link as string) } : { label: 'Retry', run: () => void send(messages.at(-1)?.content) }
+        return linkLabel ? { label: linkLabel, run: () => openPublikLink(failure.link as string) } : { label: 'Retry', run: () => void send(messages.at(-1)?.content) }
       case 'unreachable':
         return { label: 'Retry', run: () => void send(messages.at(-1)?.content) }
       case 'disconnected':
@@ -668,7 +674,10 @@ export function AssistantScreen() {
           <section className="assistant-setup-intro">
             <p className="eyebrow">Lunara AI</p>
             <h3 id="ai-chat-agreement-title">{CHAT_AGREEMENT_TITLE}</h3>
-            {chatAgreementBody(chatAsk.destination).map((line) => (
+            {chatAgreementBody(
+              // publik: the provider list may arrive after the screen opened; show the newest one.
+              chatAsk.destination.id === 'publik' ? healthDestination('publik', undefined, aiProviders) : chatAsk.destination,
+            ).map((line) => (
               <p key={line}>{line}</p>
             ))}
           </section>
@@ -712,7 +721,7 @@ export function AssistantScreen() {
           </section>
           <section className="card ai-setup-card">
             <p className="microcopy">{purchaseLinks ? PUBLIK_PLAN_SENTENCE : `${PUBLIK_PLAN_SENTENCE} ${NO_LINK_PLAN_TEXT}`}</p>
-            <p className="microcopy">{PUBLIK_DATA_PATH}</p>
+            <p className="microcopy">{publikDataPath(aiProviders)}</p>
           </section>
           {purchaseLinks && publikCard.claimUrl && (
             <button className="cta" onClick={() => openPublikLink(publikCard.claimUrl as string)}>
@@ -750,7 +759,7 @@ export function AssistantScreen() {
                 className={`choice-card compact ${provider === 'anthropic' ? 'selected' : ''}`}
                 onClick={() => void chooseProvider('anthropic')}
               >
-                <span className="choice-icon">✳</span>
+                <span className="choice-icon">{'\u2733\uFE0E'}</span>
                 <span><strong>Anthropic</strong><small>{subscriptionTokens ? 'API key or Claude CLI login' : 'Your API key'}</small></span>
               </button>
               <button
@@ -786,7 +795,7 @@ export function AssistantScreen() {
                   {purchaseLinks ? '' : ` ${NO_LINK_PLAN_TEXT}`}
                 </p>
                 <p className="microcopy">
-                  <strong>Where your messages go.</strong> {PUBLIK_DATA_PATH}
+                  <strong>Where your messages go.</strong> {publikDataPath(aiProviders)}
                 </p>
                 {purchaseLinks && apiKey && linkTarget && (
                   <button className="text-button" onClick={() => openPublikLink(linkTarget)}>
@@ -841,9 +850,8 @@ export function AssistantScreen() {
                 <details className="assistant-key-fallback">
                   <summary>Use your Claude subscription instead (CLI login)</summary>
                   <p className="microcopy">
-                    Lunara runs in a mobile WebView, so it cannot shell out to the{' '}
-                    <code>claude</code> CLI the way a server can. Run this once on a computer
-                    where you are signed in:
+                    Lunara cannot run the <code>claude</code> command on a phone. Run this once
+                    on a computer where you are signed in to Claude:
                   </p>
                   <pre className="cli-snippet"><code>claude setup-token</code></pre>
                   <p className="microcopy">
@@ -1017,7 +1025,11 @@ export function AssistantScreen() {
                       <LunaraMark decorative size={14} />
                     </span>
                   )}
-                  <span>{message.content}</span>
+                  {message.role === 'assistant' ? (
+                    <ChatMarkdown text={message.content} />
+                  ) : (
+                    <span>{message.content}</span>
+                  )}
                 </div>
                 {message.role === 'assistant' && reportingAnswer !== index && (
                   <button className="chat-report-button" onClick={() => setReportingAnswer(index)}>
@@ -1093,7 +1105,9 @@ export function AssistantScreen() {
               </svg>
             </button>
           </div>
-          <p>{AI_ANSWER_NOTE}</p>
+          <p>
+            {AI_ANSWER_NOTE} {CHAT_NOT_SAVED}
+          </p>
         </form>
       )}
     </div>

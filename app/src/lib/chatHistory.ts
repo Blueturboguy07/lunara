@@ -28,3 +28,6 @@ export function historyForSend(conversation: Conversation, destination: string):
 }
 
 export const NEW_CHAT_NOTICE = 'The AI provider changed, so Lunara AI started a new chat. The earlier messages were not sent to the new provider.'
+
+/** The chat lives only in memory: say so clearly (blind test L10: the chat was gone after a relaunch). */
+export const CHAT_NOT_SAVED = 'Chats are not saved. Lunara AI forgets this chat when you close the app.'

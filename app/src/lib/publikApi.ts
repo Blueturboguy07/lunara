@@ -197,9 +197,52 @@ export function usageFromBalance(balanceMicros: number | null, claimState: Publi
   }
 }
 
+/**
+ * GET /api/v1/wallet `ai_providers`: the companies publik sends AI requests to (for example
+ * "OpenRouter", "Amazon Web Services"). Plain names only, at most 12; null when publik sent none.
+ */
+export function aiProvidersFrom(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null
+  const names = value
+    .filter((name): name is string => typeof name === 'string')
+    .map((name) => name.replace(/\s+/g, ' ').trim())
+    .filter((name) => name.length > 0 && name.length <= 60 && /^[\p{L}\p{N} .,&()'’-]+$/u.test(name))
+  const unique = [...new Set(names)].slice(0, 12)
+  return unique.length ? unique : null
+}
+
+/** "A", "A or B", "A, B or C". */
+export function providerList(names: readonly string[]): string {
+  if (names.length <= 1) return names[0] ?? ''
+  return `${names.slice(0, -1).join(', ')} or ${names.at(-1)}`
+}
+
+/** Who answers on publik: publik's true list when the wallet sent it, else the plain words with no company named. */
+export function publikProviderWords(providers?: readonly string[] | null): string {
+  return providers?.length ? `the AI provider that answers: ${providerList(providers)}` : 'the AI provider that answers'
+}
+
 /** Where an AI chat message goes on publik API. The agreement screen (lib/healthConsent.ts) lists the exact data. */
-export const PUBLIK_DATA_PATH =
-  'AI chat is optional and asks before it sends anything. Then your question, the earlier messages in this chat and an anonymized summary of the tracker data you tick go through publik’s servers to the AI provider that answers (for example Anthropic, Google or OpenAI). It has no name, email or birth date. publik does not store the content of your messages or answers, and does not use it for ads, analytics, training, or sale. It keeps billing records (model, token counts, cost) without content.'
+export function publikDataPath(providers?: readonly string[] | null): string {
+  return `AI chat is optional and asks before it sends anything. Then your question, the earlier messages in this chat and an anonymized summary of the tracker data you tick go through publik’s servers to ${publikProviderWords(providers)}. It has no name, email or birth date. publik does not store the content of your messages or answers, and does not use it for ads, analytics, training, or sale. It keeps billing records (model, token counts, cost) without content.`
+}
+
+/** The same, before Lunara has read publik's provider list. */
+export const PUBLIK_DATA_PATH = publikDataPath(null)
+
+/**
+ * The link button under a publik error ("Add a plan or pack"): only on the US App Store storefront.
+ * An unknown storefront (the simulator, Android, a browser build) gets no button; the text says
+ * NO_LINK_PLAN_TEXT instead.
+ */
+export function publikErrorLinkLabel(
+  failure: { kind: PublikErrorKind; link: string | null },
+  claimState: PublikClaimState | null,
+  purchaseLinks: boolean,
+): string | null {
+  if (!purchaseLinks || !failure.link) return null
+  return failure.kind === 'needs_credit' || failure.kind === 'rate_limited' ? publikLinkButtonLabel(claimState) : null
+}
 
 /** The primary button while anonymous (CONTRACT §12.1c) and once claimed (§12.2). */
 export function publikLinkButtonLabel(claimState: PublikClaimState | null): string {

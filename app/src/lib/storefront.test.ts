@@ -91,4 +91,21 @@ describe('purchase links follow the App Store storefront', () => {
       expect(text).not.toContain('Get a plan') // the US button label
     }
   })
+
+  it('storefront unknown (the simulator answers none): no "Add a plan or pack" button anywhere; the Google sentence instead', async () => {
+    bridge.answer = () => Promise.resolve({ countryCode: null })
+    const s = await freshStorefront()
+    await s.loadStorefront()
+    const allowed = s.purchaseLinksAllowed()
+    expect(allowed).toBe(false)
+    const api = await import('./publikApi')
+    const needsCredit = { kind: 'needs_credit' as const, link: 'https://publikhq.com/wallet?top_up=1' }
+    expect(api.publikErrorLinkLabel(needsCredit, 'claimed', allowed)).toBeNull()
+    expect(api.publikErrorLinkLabel({ kind: 'rate_limited', link: 'https://publikhq.com/wallet' }, 'claimed', allowed)).toBeNull()
+    expect(api.notLinkedText(allowed)).toContain('To get a plan, search for "publik" on Google.')
+    expect(api.planLimitText(null, allowed)).toContain('To get a plan, search for "publik" on Google.')
+    expect(api.planLimitText(null, allowed)).not.toMatch(/Add a plan|link below/)
+    // The US storefront keeps the button and opens the normal site.
+    expect(api.publikErrorLinkLabel(needsCredit, 'claimed', true)).toBe('Add a plan or pack')
+  })
 })

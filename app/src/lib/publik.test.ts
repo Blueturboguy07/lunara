@@ -167,7 +167,7 @@ describe('provisionPublik (CONTRACT §3.2)', () => {
     const body = JSON.parse(String(calls[0].init?.body))
     expect(body.app_token).toBe(build.token)
     expect(body.app_slug).toBe('lunara')
-    expect(body.app_version).toBe('0.2.5') // APP_VERSION, the module's literal
+    expect(body.app_version).toBe('0.2.6') // APP_VERSION, the module's literal
     expect(body.os).toBe('ios')
     expect(body.arch).toBeNull()
     expect(body.device_name).toBe('iPhone')
@@ -321,9 +321,11 @@ describe('fetchPublikWallet', () => {
           add_credit_url: 'https://publikhq.com/dashboard/api/add',
           top_up_url: 'https://publikhq.com/claim/HK7F-2QWD',
           base_url: 'https://publikhq.com/api/v1',
+          ai_providers: ['OpenRouter', 'Amazon Web Services', 'OpenAI', 'Google'],
         }),
     ])
     const wallet = await fetchPublikWallet(fetchImpl)
+    expect(wallet.aiProviders).toEqual(['OpenRouter', 'Amazon Web Services', 'OpenAI', 'Google'])
     expect(calls[0].url).toBe('https://preview.publikhq.com/api/v1/wallet')
     expect(new Headers(calls[0].init?.headers).get('authorization')).toBe('Bearer pk_live_test')
     expect(wallet.balanceMicros).toBe(0)
@@ -334,6 +336,12 @@ describe('fetchPublikWallet', () => {
     expect(settings.store.get('publikInstallId')).toBe('22222222-2222-4222-8222-222222222222')
     expect(settings.store.get('publikClaimUrl')).toBe('https://publikhq.com/claim/HK7F-2QWD')
     expect(settings.store.get('publikBaseUrl')).toBe('https://publikhq.com/api/v1')
+  })
+
+  it('no ai_providers in the answer: aiProviders is null (the screen names no company)', async () => {
+    vault.store.set('publik-api-key', 'pk_live_test')
+    const { fetchImpl } = fetchSequence([() => json(200, { claim_state: 'claimed', balance_micros: 0 })])
+    expect((await fetchPublikWallet(fetchImpl)).aiProviders).toBeNull()
   })
 
   it('throws disconnected without a key and never fetches', async () => {

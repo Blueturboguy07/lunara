@@ -24,7 +24,7 @@
   padding: calc(var(--safe-top) + 8px) 16px 10px;
   flex: 0 0 auto;
   display: grid;
-  grid-template-columns: 42px minmax(0, 1fr) 42px;
+  grid-template-columns: 44px minmax(0, 1fr) 44px;
   align-items: center;
   gap: 10px;
   background: rgba(251, 247, 240, 0.91);
@@ -36,9 +36,9 @@
 
 .assistant-overlay .assistant-head .back-btn,
 .assistant-overlay .assistant-settings-button {
-  width: 42px;
-  height: 42px;
-  min-width: 42px;
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
   padding: 0;
   color: var(--ink-800);
   background: rgba(255, 253, 249, 0.72);
@@ -279,13 +279,13 @@
 
 .assistant-context-note strong {
   color: var(--ink-800);
-  font-size: 9px;
+  font-size: 13px;
   line-height: 1.35;
 }
 
 .assistant-context-note span {
-  color: var(--ink-500);
-  font-size: 7.5px;
+  color: var(--ink-650);
+  font-size: 12px;
   line-height: 1.35;
   text-align: right;
 }
@@ -339,24 +339,37 @@
 
 .assistant-overlay .consent-row > span:first-child {
   min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
+/* Long labels wrap (blind test M2): nothing is cut with an ellipsis. */
 .assistant-overlay .consent-row strong {
-  overflow: hidden;
   color: var(--ink-900);
-  font-size: 10px;
+  font-size: 14px;
   line-height: 1.3;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .assistant-overlay .consent-row small {
-  overflow: hidden;
-  color: var(--ink-500);
-  font-size: 7.8px;
+  color: var(--ink-650);
+  font-size: 12px;
   line-height: 1.4;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/*
+ * The chat agreement screen: the list is part of the page, not a second small
+ * scroller, so every item (also "Fertility and intimacy") is on the page and
+ * the page scrolls on a small phone.
+ */
+.assistant-overlay .assistant-health-consent .consent-grid {
+  max-height: none;
+  overflow: visible;
 }
 
 .assistant-overlay .toggle-dot {
@@ -616,11 +629,11 @@
 
 .assistant-overlay .chat-report-button,
 .assistant-overlay .chat-report-cancel {
-  min-height: 32px;
+  min-height: 44px;
   padding: 6px 4px;
   align-self: flex-start;
-  color: var(--ink-500);
-  font-size: 10px;
+  color: var(--ink-650);
+  font-size: 12px;
   font-weight: 650;
   text-decoration: underline;
   text-decoration-color: var(--line-medium);
@@ -652,7 +665,7 @@
 }
 
 .assistant-overlay .chat-report-reasons button {
-  min-height: 36px;
+  min-height: 44px;
   padding: 7px 11px;
   color: var(--ink-800);
   font-size: 11px;
@@ -660,6 +673,34 @@
   background: var(--surface-raised);
   border: 1px solid var(--line-medium);
   border-radius: 999px;
+}
+
+/* AI answers: a safe Markdown subset (bold, lists) drawn with React elements. */
+.assistant-overlay .chat-markdown {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  white-space: normal;
+}
+
+.assistant-overlay .chat-markdown p,
+.assistant-overlay .chat-markdown ul,
+.assistant-overlay .chat-markdown ol {
+  margin: 0;
+}
+
+.assistant-overlay .chat-markdown ul,
+.assistant-overlay .chat-markdown ol {
+  padding-left: 1.3em;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.assistant-overlay .chat-markdown strong {
+  color: var(--ink-950);
+  font-weight: 750;
 }
 
 .chat-bubble-mark {
@@ -791,8 +832,8 @@
 }
 
 .assistant-overlay .assistant-compose button {
-  width: 42px;
-  height: 42px;
+  width: 44px;
+  height: 44px;
   display: grid;
   place-items: center;
   color: #fffaf7;
@@ -832,15 +873,13 @@
   width: 100%;
   max-width: 552px;
   margin: 5px auto 0;
-  overflow: hidden;
-  color: var(--ink-500);
-  font-size: 7.5px;
+  color: var(--ink-650);
+  font-size: 11px;
   font-weight: 650;
-  line-height: 1.3;
-  letter-spacing: 0.015em;
+  line-height: 1.35;
+  letter-spacing: 0.01em;
   text-align: center;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  white-space: normal;
 }
 
 /* Settings state uses the same native shell and restrained rhythm. */
@@ -859,6 +898,15 @@
   overflow-y: auto;
   overscroll-behavior-y: contain;
   -webkit-overflow-scrolling: touch;
+}
+
+/*
+ * A .card has overflow: hidden, so in this scrolling flex column it could
+ * shrink below its content and cut the text (blind test M2: the AI cost card
+ * and the consent card). The items keep their full height; the column scrolls.
+ */
+.assistant-overlay .assistant-setup > * {
+  flex-shrink: 0;
 }
 
 .assistant-setup-intro {
@@ -881,10 +929,10 @@
   letter-spacing: -0.035em;
 }
 
-.assistant-setup-intro > p:last-of-type {
+.assistant-setup-intro > p:not(.eyebrow):not(.publik-balance) {
   max-width: 38ch;
-  color: var(--ink-500);
-  font-size: 10px;
+  color: var(--ink-650);
+  font-size: 13px;
   line-height: 1.5;
 }
 
@@ -912,10 +960,9 @@
 }
 
 .assistant-overlay .choice-card.compact small {
-  overflow: hidden;
-  font-size: 8px;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  font-size: 12px;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .assistant-overlay .ai-setup-card {
@@ -931,9 +978,9 @@
 
 .assistant-overlay .ai-setup-card .text-button {
   width: fit-content;
-  min-height: 32px;
+  min-height: 44px;
   color: var(--teal-700);
-  font-size: 9px;
+  font-size: 13px;
 }
 
 .assistant-overlay .ai-setup-card .text-button.danger {
@@ -946,7 +993,7 @@
 }
 
 .assistant-overlay .assistant-key-fallback summary {
-  min-height: 42px;
+  min-height: 44px;
   display: flex;
   align-items: center;
   color: var(--ink-700);

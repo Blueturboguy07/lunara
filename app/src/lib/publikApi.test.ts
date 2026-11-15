@@ -13,6 +13,9 @@ import {
   publikStatusLine,
   publikUrl,
   PUBLIK_DATA_PATH,
+  publikDataPath,
+  aiProvidersFrom,
+  providerList,
   PUBLIK_LINK_STARTER_MICROS,
   PUBLIK_MODELS,
   PUBLIK_PLAN_SENTENCE,
@@ -32,7 +35,20 @@ describe('where an AI chat message goes on publik', () => {
   it('the founder statement: anonymized, no content stored, billing records only', () => {
     expect(PUBLIK_DATA_PATH).toContain('AI chat is optional')
     expect(PUBLIK_DATA_PATH).toContain('an anonymized summary of the tracker data you tick')
-    expect(PUBLIK_DATA_PATH).toContain('the AI provider that answers (for example Anthropic, Google or OpenAI)')
+    expect(PUBLIK_DATA_PATH).toContain('go through publik’s servers to the AI provider that answers. It has no name')
+    expect(PUBLIK_DATA_PATH).not.toMatch(/Anthropic|Google|OpenAI|for example/)
+    expect(publikDataPath(['OpenRouter', 'Google'])).toContain('to the AI provider that answers: OpenRouter or Google. It has no name')
+  })
+
+  it('ai_providers: plain company names only, no duplicates, at most 12; anything else counts as absent', () => {
+    expect(aiProvidersFrom(['OpenRouter', 'Amazon Web Services', 'OpenAI', 'Google'])).toEqual(['OpenRouter', 'Amazon Web Services', 'OpenAI', 'Google'])
+    expect(aiProvidersFrom([' OpenAI ', 'OpenAI', 7, '', '<b>x</b>', 'a'.repeat(61)])).toEqual(['OpenAI'])
+    expect(aiProvidersFrom(undefined)).toBeNull()
+    expect(aiProvidersFrom('OpenAI')).toBeNull()
+    expect(aiProvidersFrom([])).toBeNull()
+    expect(aiProvidersFrom(Array.from({ length: 20 }, (_, i) => `Provider ${i}`))).toHaveLength(12)
+    expect(providerList(['A'])).toBe('A')
+    expect(providerList(['A', 'B', 'C'])).toBe('A, B or C')
     expect(PUBLIK_DATA_PATH).toContain('It has no name, email or birth date.')
     expect(PUBLIK_DATA_PATH).toContain(
       'publik does not store the content of your messages or answers, and does not use it for ads, analytics, training, or sale. It keeps billing records (model, token counts, cost) without content.',

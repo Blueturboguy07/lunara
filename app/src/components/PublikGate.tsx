@@ -1,4 +1,3 @@
-import { Browser } from '@capacitor/browser'
 import { useEffect, useState, type ReactNode } from 'react'
 import { gateMode } from '../lib/buildFlags'
 import {
@@ -7,22 +6,24 @@ import {
   gateScreen,
   needsSignInOnDemand,
   onPublikSignOut,
+  openPublikSheet,
   openWithoutWall,
+  problemText,
   signInOnDemand,
   type GateAction,
   type GateResult,
   type GateScreen,
   type GateUI,
 } from '../lib/publik'
-import { isNative } from '../native/runtime'
 import { LunaraMark } from './LunaraMark'
 
 /**
  * Sign in with publik. The words and the order of the screens come from the
  * publik module (lib/publik.ts); this file only draws them. Sign-in opens
  * publik's bare in-app page (inAppClaimUrl in lib/publik.ts) in the in-app
- * browser: SFSafariViewController on iOS, a Custom Tab on Android. The US
- * "Get a plan" link opens the normal publik site there.
+ * sheet (openPublikSheet): SFSafariViewController on iOS, which closes by itself
+ * after the sign-in, a Custom Tab on Android. The US "Get a plan" link opens the
+ * normal publik site there.
  *
  * PUBLIK_GATE_MODE (lib/buildFlags.ts):
  *   required (default)  <PublikGate> is a wall before onboarding, the PIN lock and the tabs.
@@ -57,9 +58,9 @@ const ui: GateUI = {
       )
     })
   },
-  openUrl(url) {
-    if (isNative) void Browser.open({ url }).catch(() => undefined)
-    else window.open(url, '_blank', 'noopener,noreferrer')
+  // The in-app sheet; with `watch` it closes by itself when publik says the work is done (lib/publik.ts).
+  openUrl(url, watch) {
+    openPublikSheet(url, watch)
   },
 }
 
@@ -96,7 +97,8 @@ export async function passWall(show: ShowScreen = showOnWall): Promise<GateResul
     try {
       return await startWall()
     } catch (error) {
-      await show(gateScreen('unreachable', null, null, error instanceof Error && error.message ? error.message : undefined))
+      // Fixed words only: a raw error text (for example "Transaction aborted") never shows.
+      await show(gateScreen('unreachable', null, null, problemText(error)))
     }
   }
 }
