@@ -4,16 +4,14 @@ import type { AssistantProvider } from './assistant'
 import type { AssistantConsent } from './assistantContext'
 
 /**
- * AI chat sends data off this phone, so it waits for the person's agreement
- * (owner decision, Nov 13 2026; App Store 5.1.2(i)). Without AI chat, health
- * and cycle data stays on this phone.
+ * AI chat is optional, and it waits for the person's answer before it sends
+ * anything (founder decisions, Nov 13 and Nov 14 2026; App Store 5.1.2(i)).
+ * Without AI chat, health and cycle data stays on this phone.
  *
- * The agreement screen ("AI chat sends data off this phone") names the
- * receiver and lists exactly what a message sends (lib/assistant.ts and
- * lib/assistantContext.ts, with the numbers in lib/aiLimits.ts):
- *   - every time: the message and the earlier messages of this chat;
- *   - the tracker categories the person ticks, with today's date.
- * The agreement is per receiver and per category: a new receiver, or a newly
+ * The screen says what lib/aiPayload.ts sends: the question (with the earlier
+ * messages of the chat) and an anonymized summary of the ticked tracker
+ * categories, with no name, email, birth date or absolute date.
+ * The answer is per receiver and per category: a new receiver, or a newly
  * ticked category, shows the screen again. "Not now" closes AI chat and sends
  * nothing. This file records the answer; it never changes what is sent.
  */
@@ -29,33 +27,29 @@ export interface HealthKindText {
 export const HEALTH_KINDS: Record<HealthKind, HealthKindText> = {
   cycle: {
     title: 'Cycle summary',
-    detail: `Your tracking mode, your last ${AI_LIMITS.periodStarts} period start dates and the current prediction (cycle day, average cycle length, next period, uncertainty)`,
+    detail: `Your tracking mode, cycle day, cycle lengths, your last ${AI_LIMITS.periodStarts} period starts as “days ago”, and the next-period estimate`,
   },
   symptoms: {
     title: 'Symptoms and mood',
-    detail: `Symptoms, moods and events from up to ${AI_LIMITS.loggedDays} recent logged days`,
+    detail: `Symptoms, moods and events from Lunara’s lists, from up to ${AI_LIMITS.loggedDays} recent logged days, as “days ago”`,
   },
   fertility: {
     title: 'Fertility and intimacy',
-    detail: `Your tracking mode; BBT, ovulation tests, discharge and sex from up to ${AI_LIMITS.loggedDays} recent days; the ovulation and fertile-window estimate; and the first day of your last period if you track a pregnancy`,
-    sensitive: true,
-  },
-  notes: {
-    title: 'Private notes',
-    detail: `Up to ${AI_LIMITS.notes} recent notes, each cut at ${AI_LIMITS.noteChars} characters`,
+    detail: `BBT, ovulation tests, discharge and sex from up to ${AI_LIMITS.loggedDays} recent days; the ovulation and fertile-window estimate; pregnancy weeks if you track a pregnancy`,
     sensitive: true,
   },
 }
 
-/** What every message sends, with or without ticked data. */
-export const CHAT_SENDS_EVERY_TIME = `Your message and the earlier messages in this chat: up to ${AI_LIMITS.chatMessages} messages, each cut at ${AI_LIMITS.messageChars.toLocaleString('en-US')} characters.`
+/** What goes with every question. */
+export const CHAT_SENDS_EVERY_TIME = `With your question, Lunara sends the earlier messages of this chat: up to ${AI_LIMITS.chatMessages} messages, each cut at ${AI_LIMITS.messageChars.toLocaleString('en-US')} characters. That is the only free text it sends.`
 
-/** What goes with the ticked data. */
-export const CHAT_SENDS_WITH_TICKED = 'With ticked data, Lunara also sends today’s date. You can change the ticks later under Tracker context.'
+/** How the summary is made. */
+export const CHAT_SENDS_WITH_TICKED = 'The summary uses relative days, such as “cycle day 14” or “3 days ago”. Notes and other free text from the tracker are never sent. You can change the ticks later under Tracker context.'
 
-export const CHAT_AGREEMENT_TITLE = 'AI chat sends data off this phone'
+export const CHAT_AGREEMENT_TITLE = 'AI chat is optional'
+export const CHAT_AGREEMENT_ACCEPT = 'Turn on AI chat'
+export const CHAT_AGREEMENT_DECLINE = 'Not now'
 
-/** The line for every privacy claim in the app (onboarding, the log sheet, articles). */
 export const DATA_STAYS_ON_PHONE = 'Your data stays on this phone unless you turn on AI chat or encrypted backup.'
 
 export interface HealthDestination {
@@ -89,13 +83,24 @@ export function ownKeyDataPath(destination: HealthDestination): string {
   return `It goes straight from this phone to ${destination.name}, under your own account with ${destination.ownAccountWith ?? destination.name}. publik never sees it.`
 }
 
-/** The body of the agreement screen, one paragraph per entry. */
+function capitalized(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1)
+}
+
+/** The body of the screen after its title, one paragraph per entry (founder text, Nov 14 2026). */
 export function chatAgreementBody(destination: HealthDestination): string[] {
+  if (!destination.ownAccountWith) {
+    return [
+      'To answer you, Lunara sends your question and an anonymized summary of your cycle data to the AI provider. It has no name, email or birth date.',
+      'publik does not store the content of your messages or answers, and does not use it for ads, analytics, training, or sale. It keeps billing records (model, token counts, cost) without content.',
+      'The AI provider processes your message to answer it, under its own terms.',
+    ]
+  }
+  // Your own key: publik is not on the path, so the publik sentences become this one.
   return [
-    `To answer you, Lunara sends your message and the data you tick below to ${destination.name}. Nothing is sent until you agree.`,
-    destination.ownAccountWith
-      ? ownKeyDataPath(destination)
-      : 'publik does not use this data for any other purpose: no ads, no analytics, no training, no sale.',
+    `To answer you, Lunara sends your question and an anonymized summary of your cycle data to ${destination.name}. It has no name, email or birth date.`,
+    ownKeyDataPath(destination),
+    `${capitalized(destination.name)} processes your message to answer it, under its own terms.`,
   ]
 }
 
@@ -105,12 +110,12 @@ export function selectedHealthKinds(consent: AssistantConsent): HealthKind[] {
 }
 
 /**
- * Stored as {"v":2,"agreed":{"<destination id>":["cycle",…]}}. A destination
- * in `agreed` has agreed to AI chat; its list is the categories it may get.
- * Answers to the earlier screen (no "v") do not count: everyone sees this
- * screen once.
+ * Stored as {"v":3,"agreed":{"<destination id>":["cycle",…]}}. A destination
+ * in `agreed` has the answer "Turn on AI chat"; its list is the categories it
+ * may get. Answers to an earlier screen (another "v") do not count: everyone
+ * sees this screen once.
  */
-const VERSION = 2
+const VERSION = 3
 
 async function readAgreed(): Promise<Record<string, HealthKind[]>> {
   const raw = await getSetting(SK.aiHealthConsent)
@@ -139,7 +144,7 @@ export async function chatAgreementNeeded(destination: HealthDestination, kinds:
   return kinds.some((kind) => !agreed.includes(kind))
 }
 
-/** "I agree": AI chat with this receiver, with these categories (added to the earlier ones). */
+/** "Turn on AI chat": AI chat with this receiver, with these categories (added to the earlier ones). */
 export async function agreeToChat(destination: HealthDestination, kinds: HealthKind[]): Promise<void> {
   const all = await readAgreed()
   const merged = new Set([...(all[destination.id] ?? []), ...kinds])

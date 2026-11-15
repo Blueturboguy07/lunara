@@ -7,6 +7,7 @@
  * repeating OS alarms here because they make timezone/DST changes, quiet
  * hours, snoozes, and cycle-estimate revisions deterministic.
  */
+import { APP_NAME } from '../lib/appName'
 
 export type ReminderKind =
   | 'cycle-estimate'
@@ -382,7 +383,7 @@ function copyFor(kind: ReminderKind, mode: ReminderPreview['mode'] = 'private'):
   body: string
 } {
   if (mode === 'private') {
-    return { title: 'Lunara', body: 'A gentle moment to check in with yourself.' }
+    return { title: APP_NAME, body: 'A gentle moment to check in with yourself.' }
   }
   switch (kind) {
     case 'medication':

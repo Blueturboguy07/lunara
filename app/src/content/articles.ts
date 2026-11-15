@@ -105,7 +105,7 @@ export const ARTICLES: Article[] = [
       'Period-app data has been shared with advertisers, handed to analytics firms, and subpoenaed in court. This is not hypothetical; it is documented history.',
       'Lunara’s default is architectural: your logs live in your phone’s app storage, and there is no Lunara-hosted database of your health data. Your data stays on this phone unless you turn on AI chat or encrypted backup.',
       'Optional backup sends an encrypted snapshot to a relay only after you enable it. The recovery code stays with you, so the relay stores an unreadable blob rather than plain health history.',
-      'AI chat is separately opt-in, and it sends data off this phone. Before the first message, Lunara shows what goes to which provider, and nothing is sent until you agree. Each message sends your message, the earlier messages in that chat and only the tracker categories you tick.',
+      'AI chat is optional, and it sends data off this phone. Before the first message, Lunara shows what goes to which provider, and nothing is sent until you turn it on. Each message sends your question, the earlier messages in that chat and an anonymized summary of only the tracker categories you tick: no name, email or birth date, no notes, and no calendar dates.',
       'The code is open source under AGPL-3.0, so none of this requires trust. Read it, build it, verify it.',
     ],
   },

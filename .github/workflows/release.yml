@@ -17,7 +17,8 @@
 # ANDROID_KEYSTORE_* secrets the workflow fails before it builds anything.
 # The web bundle is a release build (LUNARA_RELEASE=1): no publik test hooks,
 # and the app token comes from the secret only (app/src/lib/buildCheck.ts).
-# Optional repository variable: PUBLIK_GATE_MODE (required, the default, or optional).
+# The publik gate is always required in a release build (vite build refuses
+# PUBLIK_GATE_MODE=optional together with LUNARA_RELEASE=1).
 
 name: Android Release
 
@@ -143,7 +144,7 @@ jobs:
         env:
           LUNARA_RELEASE: "1"
           VITE_PUBLIK_APP_TOKEN: ${{ secrets.PUBLIK_APP_TOKEN }}
-          PUBLIK_GATE_MODE: ${{ vars.PUBLIK_GATE_MODE || 'required' }}
+          PUBLIK_GATE_MODE: required
         run: |
           pnpm build:native
           echo "Bundle: $(cat dist/lunara-build.json)"

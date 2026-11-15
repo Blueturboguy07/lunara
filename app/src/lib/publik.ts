@@ -57,6 +57,7 @@ import {
 import { testHooksOn } from './buildFlags'
 import { forgetChatAgreement } from './healthConsent'
 import { providerFetch } from './providerFetch'
+import { loadStorefront, NO_LINK_PLAN_TEXT, purchaseLinksAllowed } from './storefront'
 import {
   DEFAULT_PUBLIK_ENDPOINT,
   isAdultBirthYear,
@@ -79,7 +80,7 @@ type FetchLike = typeof fetch
 
 export const APP_SLUG = "lunara"
 /** Mirrors app/package.json `version` and PUBLIK_BUILD.appVersion; publikBuild.test.ts pins all three equal. */
-export const APP_VERSION = "0.2.1"
+export const APP_VERSION = "0.2.2"
 /** Lunara AI (adults only) calls a model, so the gate asks how to pay for it. */
 export const USES_AI = true
 const PUBLIK_ORIGIN = 'https://publikhq.com'
@@ -103,7 +104,7 @@ export interface Wallet {
   plan: { kind: 'none' | 'plan' | 'pack'; label: string | null }; balance_micros: number; top_up_url: string; linked_at: string | null
 }
 /** 'not_now' exists only on signInOnDemand() screens (PUBLIK_GATE_MODE=optional). */
-export type GateAction = 'sign_in' | 'retry' | 'get_plan' | 'connect' | 'own_key' | 'not_now'
+export type GateAction = 'sign_in' | 'retry' | 'get_plan' | 'check_plan' | 'connect' | 'own_key' | 'not_now'
 export interface GateScreen { id: 'sign_in' | 'unreachable' | 'choose'; title: string; body: string; note: string | null; buttons: { action: GateAction; label: string }[] }
 /** show(): draw the screen and resolve with the button pressed. When `signal` aborts, stop waiting for a press (the promise may stay pending). */
 export interface GateUI { show(screen: GateScreen, signal: AbortSignal): Promise<GateAction>; openUrl(url: string): unknown }
@@ -792,8 +793,15 @@ export function gateScreen(id: GateScreen['id'], w: Wallet | null, note: string 
   if (id === 'sign_in') return { id, title: 'Sign in with publik', note, buttons: [{ action: 'sign_in', label: 'Sign in with publik' }],
     body: 'This app uses your publik account. Click Sign in with publik, then sign in in your browser. This window continues when you are signed in.' }
   // No handle and no balance: the plan screen can show before the PIN lock.
-  if (!w || (w.plan.kind === 'none' && w.balance_micros === 0)) return { id, title: 'Choose how to pay for AI', note,
-    body: 'You are signed in to publik. This app uses AI. Get a publik plan, or use your own key.', buttons: [{ action: 'get_plan', label: 'Get a plan' }, { action: 'own_key', label: 'Use my own key' }] }
+  if (!w || (w.plan.kind === 'none' && w.balance_micros === 0)) {
+    // US App Store storefront: "Get a plan" opens publik. Any other or unknown storefront: no link, no button,
+    // no price (lib/storefront.ts); "Connect your plan" reads the account again after a plan is bought elsewhere.
+    if (!purchaseLinksAllowed()) return { id, title: 'Choose how to pay for AI', note,
+      body: `You are signed in to publik. This app uses AI. ${NO_LINK_PLAN_TEXT} Then click Connect your plan. Or use your own key.`,
+      buttons: [{ action: 'check_plan', label: 'Connect your plan' }, { action: 'own_key', label: 'Use my own key' }] }
+    return { id, title: 'Choose how to pay for AI', note,
+      body: 'You are signed in to publik. This app uses AI. Get a publik plan, or use your own key.', buttons: [{ action: 'get_plan', label: 'Get a plan' }, { action: 'own_key', label: 'Use my own key' }] }
+  }
   const what = w.plan.kind === 'plan' ? 'You have a publik plan.' : 'You have publik credit.'
   return { id, title: 'Connect your plan', note, body: `You are signed in to publik. ${what} Connect it to use AI in this app, or use your own key.`,
     buttons: [{ action: 'connect', label: 'Connect your plan' }, { action: 'own_key', label: 'Use my own key' }] }
@@ -957,6 +965,8 @@ function errorText(error: unknown): string | undefined {
 
 async function gateLoop(ui: GateUI, notNow: boolean): Promise<GateResult | null> {
   await selfTestIfAsked().catch(() => undefined)
+  // The plan screen needs the storefront before it shows (purchase links: US storefront only).
+  await loadStorefront()
   watchForeground()
   // "Not now" on every screen of an on-demand sign-in (optional mode); never on the wall.
   const offer = (screen: GateScreen): GateScreen => (notNow ? { ...screen, buttons: [...screen.buttons, { action: 'not_now', label: 'Not now' }] } : screen)
@@ -1020,6 +1030,8 @@ async function gateLoop(ui: GateUI, notNow: boolean): Promise<GateResult | null>
           return { key: c.key, wallet: w, choice: null, chosenNow: false, offline: false }
         }
         if (a === 'get_plan') { ui.openUrl(w.top_up_url); planNote = 'Waiting for your plan. Finish in your browser.'; planPoll = true }
+        // No purchase link here: read the account again. With a plan, the next screen is Connect your plan.
+        if (a === 'check_plan') planNote = `No plan on your publik account yet. ${NO_LINK_PLAN_TEXT}`
         if (a === 'timeout') planNote = 'No plan after 10 minutes. Click Get a plan to try again.'
         if (a === 'done') closeBrowser()
         if (a !== 'connect' && a !== 'own_key') continue // "done": the plan is there; the next screen is Connect your plan

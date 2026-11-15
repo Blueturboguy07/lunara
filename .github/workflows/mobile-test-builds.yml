@@ -98,6 +98,7 @@ jobs:
           expect_fail env VITE_PUBLIK_APP_TOKEN=pat_lunara_REPLACE_ME pnpm exec vite build --mode native --outDir "$out"
           expect_fail env LUNARA_RELEASE=1 VITE_PUBLIK_APP_TOKEN= pnpm exec vite build --mode native --outDir "$out"
           expect_fail env PUBLIK_API_BASE_URL=http://127.0.0.1:8787 pnpm exec vite build --mode native --outDir "$out"
+          expect_fail env VITE_PUBLIK_APP_TOKEN="$TOKEN" PUBLIK_GATE_MODE=optional LUNARA_RELEASE=1 pnpm exec vite build --mode native --outDir "$out"
           LUNARA_RELEASE=1 VITE_PUBLIK_APP_TOKEN="$TOKEN" pnpm exec vite build --mode native --outDir "$out/App/public" --emptyOutDir > /dev/null
           echo "Release bundle: $(cat "$out/App/public/lunara-build.json")"
           CONFIGURATION=Release SRCROOT="$out" sh ios/App/scripts/check-release-build.sh
@@ -107,6 +108,12 @@ jobs:
             exit 1
           fi
           echo "The Xcode Release check refused the test bundle (as expected)."
+          PUBLIK_GATE_MODE=optional VITE_PUBLIK_APP_TOKEN="$TOKEN" pnpm exec vite build --mode native --outDir "$out/App/public" --emptyOutDir > /dev/null
+          if CONFIGURATION=Release SRCROOT="$out" sh ios/App/scripts/check-release-build.sh; then
+            echo "::error::The Xcode Release check accepted a bundle with no publik gate."
+            exit 1
+          fi
+          echo "The Xcode Release check refused the bundle with no publik gate (as expected)."
 
       - name: Build web bundle (native mode, test hooks)
         working-directory: app

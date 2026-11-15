@@ -1,6 +1,8 @@
 import { Browser } from '@capacitor/browser'
 import { Children, isValidElement, type ReactNode, useEffect, useMemo, useState } from 'react'
 import { LunaraMark } from '../components/LunaraMark'
+import { APP_NAME } from '../lib/appName'
+import { usePurchaseLinks } from '../components/usePurchaseLinks'
 import {
   createDefaultHealthProfile,
   db,
@@ -26,6 +28,7 @@ import {
   type AssistantProvider,
 } from '../lib/assistant'
 import { localToday } from '../lib/dates'
+import { NO_LINK_PLAN_TEXT } from '../lib/storefront'
 import { DATA_STAYS_ON_PHONE, healthDestination, ownKeyDataPath } from '../lib/healthConsent'
 import {
   DEFAULT_PUBLIK_MODEL,
@@ -294,7 +297,7 @@ function Frame({
           {showProgress && onBack
             ? <button type="button" className="back-btn" onClick={onBack} aria-label="Go back">‹</button>
             : <span className="ob-appbar-spacer" aria-hidden="true" />}
-          <div className="lunara-brand-button ob-appbar-mark" aria-label="Lunara">
+          <div className="lunara-brand-button ob-appbar-mark" aria-label={APP_NAME}>
             <LunaraMark decorative size={24} />
           </div>
           {showProgress && onSkip
@@ -465,6 +468,8 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
   const [current, setCurrent] = useState<StepId>('welcome')
   const [draft, setDraft] = useState<Draft>(DEFAULT_DRAFT)
   const [provider, setProvider] = useState<AssistantProvider>('anthropic')
+  // Purchase links, buttons and prices: US App Store storefront only (lib/storefront.ts).
+  const purchaseLinks = usePurchaseLinks()
   const [apiKey, setApiKey] = useState('')
   const [model, setModel] = useState(DEFAULT_ANTHROPIC_MODEL)
   const [baseUrl, setBaseUrl] = useState('')
@@ -880,7 +885,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
             <span className="ob-hero-label">Built for private, local-first tracking</span>
           </div>
           <div>
-            <p className="eyebrow">Meet Lunara</p>
+            <p className="eyebrow">Meet {APP_NAME}</p>
             <h1>A clearer map of your changing body.</h1>
             <p className="lead">
               Start with what you know. Lunara will adapt its questions, show when an estimate is
@@ -976,7 +981,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
           </article>
           <article>
             <span className="cautious">Ask first</span>
-            <div><strong>AI chat and health imports</strong><p>AI chat sends data off this phone only after you agree. Health imports need your phone’s permission.</p></div>
+            <div><strong>AI chat and health imports</strong><p>AI chat is optional. It sends data off this phone only after you turn it on. Health imports need your phone’s permission.</p></div>
           </article>
         </div>
         {age !== null && !adult && (
@@ -1579,14 +1584,14 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
           title="Choose how the assistant runs."
           body={
             publikHere
-              ? 'Core tracking and calculations work without AI. The assistant runs on publik API unless you bring your own key. AI chat asks for your agreement before it sends anything off this phone.'
-              : 'Core tracking and calculations work without AI. You bring your own credential. AI chat asks for your agreement before it sends anything off this phone.'
+              ? 'AI chat is optional. Core tracking and calculations work without it. The assistant runs on publik API unless you bring your own key. It asks before it sends anything off this phone.'
+              : 'AI chat is optional. Core tracking and calculations work without it. You bring your own credential. It asks before it sends anything off this phone.'
           }
         />
         <div className="ai-provider-grid">
           {publikHere && (
             <OptionCard
-              option={{ id: 'publik', icon: '◐', label: 'publik API', detail: `No key needed. Starts at $0.00; link your publik account for ${dollars(PUBLIK_LINK_STARTER_MICROS)} of free use, then priced per use.` }}
+              option={{ id: 'publik', icon: '◐', label: 'publik API', detail: purchaseLinks ? `No key needed. Starts at $0.00; link your publik account for ${dollars(PUBLIK_LINK_STARTER_MICROS)} of free use, then priced per use.` : 'No key needed. Uses your publik plan.' }}
               selected={provider === 'publik'}
               onClick={() => chooseProvider('publik')}
             />
@@ -1612,10 +1617,12 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         {provider === 'publik' && publikInstall ? (
           <div className="card ai-setup-card">
             <p className="microcopy"><strong>Lunara AI is ready.</strong></p>
-            <p className="publik-balance">{publikBalanceLine(publikInstall.balanceMicros, publikInstall.claimState)}</p>
-            <p className="microcopy">{publikInstall.costSentence ?? PUBLIK_WHY_IT_COSTS}</p>
+            <p className="publik-balance">
+              {purchaseLinks ? publikBalanceLine(publikInstall.balanceMicros, publikInstall.claimState) : publikInstall.balanceMicros === null ? '' : `${dollars(publikInstall.balanceMicros)} of publik usage available`}
+            </p>
+            <p className="microcopy">{purchaseLinks ? publikInstall.costSentence ?? PUBLIK_WHY_IT_COSTS : NO_LINK_PLAN_TEXT}</p>
             <p className="microcopy">{PUBLIK_DATA_PATH}</p>
-            {publikInstall.claimUrl && (
+            {purchaseLinks && publikInstall.claimUrl && (
               <button className="cta" onClick={() => void Browser.open({ url: publikInstall.claimUrl as string })}>
                 {publikLinkButtonLabel(publikInstall.claimState)}
               </button>
@@ -1624,16 +1631,22 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         ) : provider === 'publik' ? (
           <div className="card ai-setup-card">
             <p className="microcopy"><strong>Lunara AI uses publik API.</strong></p>
-            <p className="microcopy">
-              <strong>Cost.</strong> {PUBLIK_WHY_IT_COSTS} {PUBLIK_STARTS_AT_ZERO} Most people spend
-              under $2 a month after that.
-            </p>
+            {purchaseLinks ? (
+              <p className="microcopy">
+                <strong>Cost.</strong> {PUBLIK_WHY_IT_COSTS} {PUBLIK_STARTS_AT_ZERO} Most people spend
+                under $2 a month after that.
+              </p>
+            ) : (
+              <p className="microcopy">
+                <strong>Plan.</strong> {NO_LINK_PLAN_TEXT}
+              </p>
+            )}
             <p className="microcopy">
               <strong>Where your messages go.</strong> {PUBLIK_DATA_PATH}
             </p>
             <p className="microcopy">
               By continuing you agree to the{' '}
-              <a href="https://publikhq.com/developers#why" target="_blank" rel="noreferrer">publik API terms</a>.
+              {purchaseLinks ? <a href="https://publikhq.com/developers#why" target="_blank" rel="noreferrer">publik API terms</a> : 'publik API terms'}.
               You can switch to your own key at any time in AI settings.
             </p>
             {publikError && <p className="microcopy" role="alert">{publikError}</p>}

@@ -68,7 +68,7 @@ vi.mock('../db/schema', () => {
 vi.mock('./publikBuild', () => ({
   PUBLIK_BUILD: {
     appSlug: 'lunara',
-    appVersion: '0.2.1',
+    appVersion: '0.2.2',
     appToken: 'pat_lunara_' + 'g'.repeat(32),
     baseUrl: 'https://publikhq.com/api/v1',
     disclosureVersion: 3,
@@ -158,6 +158,7 @@ vi.mock('./providerFetch', () => ({
 }))
 
 import { gateMode, isAppStoreBuild } from './buildFlags'
+import { _setStorefrontForTests } from './storefront'
 import {
   _resetPublikForTests,
   accountDeletionUrl,
@@ -217,6 +218,8 @@ const walletCalls = () => net.calls.filter((c) => c.url.endsWith('/api/v1/wallet
 beforeEach(() => {
   vi.useFakeTimers()
   _resetPublikForTests()
+  // The US App Store storefront: purchase links as built. Other storefronts have their own tests below.
+  _setStorefrontForTests('USA')
   runtime.isNative = true
   runtime.nativePlatform = 'ios'
   vault.store.clear()
@@ -269,6 +272,42 @@ describe('the gate words', () => {
   })
 })
 
+describe('purchase links: US App Store storefront only', () => {
+  const empty = { claim_state: 'claimed' as const, claim_url: null, account: null, plan: { kind: 'none' as const, label: null }, balance_micros: 0, top_up_url: 'https://publikhq.com/wallet?top_up=1', linked_at: null }
+
+  it('any other storefront, or an unknown one: no link, no button, no price; Connect your plan and Use my own key stay', () => {
+    for (const storefront of ['CAN', 'GBR', 'IND', null]) {
+      _setStorefrontForTests(storefront)
+      const choose = gateScreen('choose', empty)
+      expect(choose.body).toBe('You are signed in to publik. This app uses AI. To get a plan, search for "publik" on Google. Then click Connect your plan. Or use your own key.')
+      expect(choose.buttons).toEqual([{ action: 'check_plan', label: 'Connect your plan' }, { action: 'own_key', label: 'Use my own key' }])
+      expect(JSON.stringify(choose)).not.toMatch(/Get a plan|https?:|\$\d/)
+      const connect = gateScreen('choose', { ...empty, plan: { kind: 'plan', label: null } })
+      expect(connect.buttons.map((b) => b.label)).toEqual(['Connect your plan', 'Use my own key'])
+    }
+  })
+
+  it('the US storefront keeps Get a plan', () => {
+    _setStorefrontForTests('USA')
+    expect(gateScreen('choose', empty).buttons.map((b) => b.label)).toEqual(['Get a plan', 'Use my own key'])
+  })
+
+  it('outside the US the gate opens no purchase page: Connect your plan reads the account again', async () => {
+    _setStorefrontForTests('CAN')
+    net.wallets = [claimedEmpty, claimedEmpty, claimedPlan]
+    const { ui, screens, opened } = scriptedUI({ [WORDS.chooseTitle]: 'Connect your plan' })
+    const run = ensureSignedIn(ui)
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(await run).toMatchObject({ choice: 'publik', chosenNow: true })
+    expect(opened).toEqual([])
+    expect(screens.map((s) => [s.title, s.note])).toEqual([
+      [WORDS.chooseTitle, null],
+      [WORDS.chooseTitle, 'No plan on your publik account yet. To get a plan, search for "publik" on Google.'],
+      [WORDS.connectTitle, null],
+    ])
+  })
+})
+
 describe('ensureSignedIn against a fake publik', () => {
   it('sign in, get a plan, connect it, then count the open with the install key', async () => {
     net.wallets = [anonymous, anonymous, anonymous, claimedEmpty, claimedEmpty, claimedEmpty, claimedPlan]
@@ -296,7 +335,7 @@ describe('ensureSignedIn against a fake publik', () => {
     expect(events[0]!.auth).toBe('Bearer pk_live_gatetest')
     const first = JSON.parse(events[0]!.body!) as Record<string, unknown>
     expect(Object.keys(first).sort()).toEqual(['app', 'app_version', 'event', 'install_id', 'os', 'v'])
-    expect(first).toMatchObject({ v: 1, app: 'lunara', event: 'app_opened', app_version: '0.2.1', os: 'ios' })
+    expect(first).toMatchObject({ v: 1, app: 'lunara', event: 'app_opened', app_version: '0.2.2', os: 'ios' })
     expect(String(first.install_id)).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
     await vi.advanceTimersByTimeAsync(30 * 60_000)
     expect(JSON.parse(telemetryCalls()[1]!.body!)).toMatchObject({ event: 'active_session', install_id: first.install_id })
@@ -450,9 +489,9 @@ describe('the self-test and the test hook', () => {
     const { ui, screens } = scriptedUI()
     void ensureSignedIn(ui)
     await vi.advanceTimersByTimeAsync(1_000)
-    expect(native.selfTestLines).toEqual(['publik self-test: ok lunara 0.2.1'])
+    expect(native.selfTestLines).toEqual(['publik self-test: ok lunara 0.2.2'])
     expect(net.calls.map((c) => c.url)).toEqual(['https://publikhq.com/api/v1/installs', 'https://publikhq.com/api/v1/wallet'])
-    expect(JSON.parse(net.calls[0]!.body!)).toMatchObject({ app_slug: 'lunara', app_version: '0.2.1', os: 'ios' })
+    expect(JSON.parse(net.calls[0]!.body!)).toMatchObject({ app_slug: 'lunara', app_version: '0.2.2', os: 'ios' })
     expect(screens).toEqual([])
     log.mockRestore()
   })
@@ -652,7 +691,7 @@ describe('optional mode: no wall, sign-in on demand', () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
     void openWithoutWall()
     await vi.advanceTimersByTimeAsync(1_000)
-    expect(native.selfTestLines).toEqual(['publik self-test: ok lunara 0.2.1'])
+    expect(native.selfTestLines).toEqual(['publik self-test: ok lunara 0.2.2'])
     log.mockRestore()
   })
 })
@@ -789,12 +828,12 @@ describe('sign-out: the phone forgets first, then tells publik; counting stops; 
 
   it('deletes the key, the settings and the AI chat agreement with publik before the revoke call, which still carries the key', async () => {
     await signedIn()
-    settings.store.set('aiHealthConsent', JSON.stringify({ v: 2, agreed: { publik: ['cycle'], anthropic: ['notes'] } }))
+    settings.store.set('aiHealthConsent', JSON.stringify({ v: 3, agreed: { publik: ['cycle'], anthropic: ['symptoms'] } }))
     const announced: string[] = []
     onPublikSignOut(() => announced.push('gate'))
     await disconnectPublik()
     expect(net.calls.find((c) => c.url.endsWith('/installs/revoke'))).toMatchObject({ method: 'POST', auth: 'Bearer pk_live_gatetest' })
-    expect(net.atRevoke).toEqual({ vaultKey: false, settings: [], healthConsent: JSON.stringify({ v: 2, agreed: { anthropic: ['notes'] } }) })
+    expect(net.atRevoke).toEqual({ vaultKey: false, settings: [], healthConsent: JSON.stringify({ v: 3, agreed: { anthropic: ['symptoms'] } }) })
     expect(announced).toEqual(['gate']) // required mode: PublikGate shows the wall again
     await vi.advanceTimersByTimeAsync(2 * 30 * 60_000)
     expect(telemetryCalls()).toHaveLength(1) // no "still open" after sign-out

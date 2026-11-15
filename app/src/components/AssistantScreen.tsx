@@ -16,8 +16,9 @@ import {
   type AssistantProvider,
   type ChatMessage,
 } from '../lib/assistant'
+import { makeAiPayload } from '../lib/aiPayload'
 import {
-  collectApprovedAssistantContext,
+  collectTrackerSnapshot,
   NO_ASSISTANT_CONSENT,
   parseAssistantConsent,
   type AssistantConsent,
@@ -27,6 +28,8 @@ import { gateMode } from '../lib/buildFlags'
 import { chatDestination, historyForSend, NEW_CHAT_NOTICE } from '../lib/chatHistory'
 import {
   agreeToChat,
+  CHAT_AGREEMENT_ACCEPT,
+  CHAT_AGREEMENT_DECLINE,
   CHAT_AGREEMENT_TITLE,
   CHAT_SENDS_EVERY_TIME,
   CHAT_SENDS_WITH_TICKED,
@@ -58,6 +61,7 @@ import {
   publikLinkButtonLabel,
   publikLocalState,
   publikStatusLine,
+  publikStatusLineNoLinks,
   PublikApiError,
   resolveProvider,
   setChoice,
@@ -72,8 +76,10 @@ import {
   secureVaultStatus,
   setSecureSecret,
 } from '../native/secureVault'
+import { NO_LINK_NEEDS_CREDIT_TEXT, NO_LINK_PLAN_TEXT } from '../lib/storefront'
 import { useApp } from '../state/appStore'
 import { LunaraMark } from './LunaraMark'
+import { usePurchaseLinks } from './usePurchaseLinks'
 import '../styles/assistant.css'
 
 // The same words on the agreement screen and under Tracker context: exactly what each category sends.
@@ -145,10 +151,12 @@ export function AssistantScreen() {
   const [starterMicros, setStarterMicros] = useState<number | null>(null)
   const [costSentence, setCostSentence] = useState(PUBLIK_WHY_IT_COSTS)
   const [publikCard, setPublikCard] = useState<PublikCard | null>(null)
-  // "AI chat sends data off this phone" (lib/healthConsent.ts): nothing goes to a provider before "I agree".
+  // "AI chat is optional" (lib/healthConsent.ts): nothing goes to a provider before "Turn on AI chat".
   // `text` is the message that waits for the answer (null: the screen came when AI chat opened).
   const [chatAsk, setChatAsk] = useState<{ text: string | null; destination: HealthDestination } | null>(null)
   const subscriptionTokens = claudeSubscriptionTokensAllowed()
+  // Purchase links, buttons and prices: US App Store storefront only (lib/storefront.ts).
+  const purchaseLinks = usePurchaseLinks()
   const scroller = useRef<HTMLDivElement>(null)
   const composerInput = useRef<HTMLTextAreaElement>(null)
 
@@ -488,7 +496,7 @@ export function AssistantScreen() {
     // An urgent message gets the safety answer on this phone, with no provider request.
     const safetyIntercept = screenAssistantUrgency(text)
     if (!safetyIntercept && !agreed) {
-      // Nothing goes to a provider before "I agree" for that provider and every ticked category.
+      // Nothing goes to a provider before "Turn on AI chat" for that provider and every ticked category.
       const destination = healthDestination(provider, baseUrl)
       if (await chatAgreementNeeded(destination, selectedHealthKinds(consent))) {
         setChatAsk({ text, destination })
@@ -514,7 +522,8 @@ export function AssistantScreen() {
     setNotice(history.cleared ? NEW_CHAT_NOTICE : null)
     setPublikError(null)
     try {
-      const approvedContext = await collectApprovedAssistantContext(consent)
+      // The one anonymized payload (lib/aiPayload.ts), the same for publik and for an own key.
+      const payload = makeAiPayload({ messages: next, consent, tracker: await collectTrackerSnapshot(consent) })
       const ask = async (key: string) => {
         const config: AssistantConfig = {
           provider,
@@ -523,7 +532,7 @@ export function AssistantScreen() {
           baseUrl: baseUrl || undefined,
           publik: provider === 'publik' ? (publikEndpointState ?? undefined) : undefined,
         }
-        return askAssistantDetailed(config, next, approvedContext)
+        return askAssistantDetailed(config, payload)
       }
       let reply
       try {
@@ -551,7 +560,7 @@ export function AssistantScreen() {
     }
   }
 
-  /** "I agree": AI chat with this provider and the ticked categories; then the waiting message goes. */
+  /** "Turn on AI chat": AI chat with this provider and the ticked categories; then the waiting message goes. */
   async function agreeAndContinue() {
     if (!chatAsk) return
     const { text, destination } = chatAsk
@@ -569,9 +578,10 @@ export function AssistantScreen() {
   function publikErrorAction(failure: PublikApiError): { label: string; run: () => void } | null {
     switch (failure.kind) {
       case 'needs_credit':
+        if (!purchaseLinks) return null
         return failure.link ? { label: claimState === 'claimed' ? 'Add a plan or pack' : 'Link this phone & pick a plan', run: () => openPublikLink(failure.link as string) } : null
       case 'rate_limited':
-        return failure.link ? { label: publikLinkButtonLabel(claimState), run: () => openPublikLink(failure.link as string) } : { label: 'Retry', run: () => void send(messages.at(-1)?.content) }
+        return failure.link && purchaseLinks ? { label: publikLinkButtonLabel(claimState), run: () => openPublikLink(failure.link as string) } : { label: 'Retry', run: () => void send(messages.at(-1)?.content) }
       case 'unreachable':
         return { label: 'Retry', run: () => void send(messages.at(-1)?.content) }
       case 'disconnected':
@@ -587,7 +597,7 @@ export function AssistantScreen() {
 
   const publikErrorBlock = publikError && (
     <div className="assistant-error" role="alert">
-      <span>{publikError.message}</span>
+      <span>{!purchaseLinks && publikError.kind === 'needs_credit' ? NO_LINK_NEEDS_CREDIT_TEXT : publikError.message}</span>
       <div className="assistant-error-actions">
         {(() => {
           const action = publikErrorAction(publikError)
@@ -651,18 +661,14 @@ export function AssistantScreen() {
       ) : chatAsk && !setupOpen ? (
         <div className="overlay-body assistant-setup assistant-health-consent" role="alertdialog" aria-labelledby="ai-chat-agreement-title">
           <section className="assistant-setup-intro">
-            <p className="eyebrow">Before AI chat</p>
+            <p className="eyebrow">Lunara AI</p>
             <h3 id="ai-chat-agreement-title">{CHAT_AGREEMENT_TITLE}</h3>
             {chatAgreementBody(chatAsk.destination).map((line) => (
               <p key={line}>{line}</p>
             ))}
           </section>
           <section className="card ai-setup-card">
-            <p className="microcopy"><strong>Every message sends</strong></p>
-            <ul>
-              <li className="microcopy">{CHAT_SENDS_EVERY_TIME}</li>
-            </ul>
-            <p className="microcopy"><strong>Tick the tracker data to send with it</strong></p>
+            <p className="microcopy"><strong>The summary includes</strong></p>
             <div className="consent-grid">
               {CONSENT_OPTIONS.map((option) => (
                 <button
@@ -683,12 +689,13 @@ export function AssistantScreen() {
               ))}
             </div>
             <p className="microcopy">{CHAT_SENDS_WITH_TICKED}</p>
+            <p className="microcopy">{CHAT_SENDS_EVERY_TIME}</p>
           </section>
           <button className="cta" onClick={() => void agreeAndContinue()}>
-            I agree
+            {CHAT_AGREEMENT_ACCEPT}
           </button>
           <button className="text-button" onClick={chatNotNow}>
-            Not now
+            {CHAT_AGREEMENT_DECLINE}
           </button>
         </div>
       ) : publikCard && !setupOpen ? (
@@ -696,13 +703,17 @@ export function AssistantScreen() {
           <section className="assistant-setup-intro">
             <p className="eyebrow">publik API</p>
             <h3>Lunara AI is ready</h3>
-            <p className="publik-balance">{publikBalanceLine(publikCard.balanceMicros, publikCard.claimState)}</p>
+            <p className="publik-balance">
+              {purchaseLinks
+                ? publikBalanceLine(publikCard.balanceMicros, publikCard.claimState)
+                : publikCard.balanceMicros === null ? '' : `${dollars(publikCard.balanceMicros)} of publik usage available`}
+            </p>
           </section>
           <section className="card ai-setup-card">
-            <p className="microcopy">{publikCard.costSentence}</p>
+            <p className="microcopy">{purchaseLinks ? publikCard.costSentence : NO_LINK_PLAN_TEXT}</p>
             <p className="microcopy">{PUBLIK_DATA_PATH}</p>
           </section>
-          {publikCard.claimUrl && (
+          {purchaseLinks && publikCard.claimUrl && (
             <button className="cta" onClick={() => openPublikLink(publikCard.claimUrl as string)}>
               {publikLinkButtonLabel(publikCard.claimState)}
             </button>
@@ -730,7 +741,7 @@ export function AssistantScreen() {
                   <span className="choice-icon">◐</span>
                   <span>
                     <strong>publik API</strong>
-                    <small>{apiKey && provider === 'publik' ? publikStatusLine(publikUsage) : `No key needed · link once for ${dollars(PUBLIK_LINK_STARTER_MICROS)} of free use`}</small>
+                    <small>{apiKey && provider === 'publik' ? (purchaseLinks ? publikStatusLine(publikUsage) : publikStatusLineNoLinks(publikUsage)) : purchaseLinks ? `No key needed · link once for ${dollars(PUBLIK_LINK_STARTER_MICROS)} of free use` : 'No key needed · uses your publik plan'}</small>
                   </span>
                 </button>
               )}
@@ -768,23 +779,33 @@ export function AssistantScreen() {
                     ))}
                   </select>
                 </div>
-                {apiKey && <p className="microcopy"><strong>{publikStatusLine(publikUsage)}</strong></p>}
-                <p className="microcopy">
-                  <strong>Cost.</strong> {costSentence}
-                  {!apiKey && starterMicros === null && costSentence === PUBLIK_WHY_IT_COSTS ? ` ${PUBLIK_STARTS_AT_ZERO}` : ''}
-                  {starterMicros !== null ? ` This phone came with ${dollars(starterMicros)} of free use.` : ''}
-                </p>
+                {apiKey && <p className="microcopy"><strong>{(purchaseLinks ? publikStatusLine(publikUsage) : publikStatusLineNoLinks(publikUsage))}</strong></p>}
+                {purchaseLinks ? (
+                  <p className="microcopy">
+                    <strong>Cost.</strong> {costSentence}
+                    {!apiKey && starterMicros === null && costSentence === PUBLIK_WHY_IT_COSTS ? ` ${PUBLIK_STARTS_AT_ZERO}` : ''}
+                    {starterMicros !== null ? ` This phone came with ${dollars(starterMicros)} of free use.` : ''}
+                  </p>
+                ) : (
+                  <p className="microcopy">
+                    <strong>Plan.</strong> {NO_LINK_PLAN_TEXT}
+                  </p>
+                )}
                 <p className="microcopy">
                   <strong>Where your messages go.</strong> {PUBLIK_DATA_PATH}
                 </p>
-                {apiKey && linkTarget && (
+                {purchaseLinks && apiKey && linkTarget && (
                   <button className="text-button" onClick={() => openPublikLink(linkTarget)}>
                     {linkLabel}
                   </button>
                 )}
-                <a className="microcopy" href="https://publikhq.com/developers#why" target="_blank" rel="noreferrer">
-                  How pricing works · publik API terms
-                </a>
+                {purchaseLinks ? (
+                  <a className="microcopy" href="https://publikhq.com/developers#why" target="_blank" rel="noreferrer">
+                    How pricing works · publik API terms
+                  </a>
+                ) : (
+                  <p className="microcopy">publik API terms apply.</p>
+                )}
                 {apiKey && (
                   <button className="text-button danger" onClick={() => void disconnect()} disabled={publikBusy}>
                     Disconnect publik API
@@ -933,7 +954,7 @@ export function AssistantScreen() {
               </svg>
             </button>
             {provider === 'publik' && publikUsage && (
-              <p className="assistant-publik-line">{publikStatusLine(publikUsage)}</p>
+              <p className="assistant-publik-line">{(purchaseLinks ? publikStatusLine(publikUsage) : publikStatusLineNoLinks(publikUsage))}</p>
             )}
 
             {contextOpen && (

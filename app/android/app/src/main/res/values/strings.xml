@@ -1,6 +1,8 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">Lunara</string>
+    <!-- The app name (src/lib/appName.ts): Settings > Apps, permission dialogs. -->
+    <string name="app_name">publik Lunara</string>
+    <!-- The short home-screen name: the launcher label and the widget title. -->
     <string name="title_activity_main">Lunara</string>
     <string name="package_name">app.lunara.mobile</string>
     <string name="custom_url_scheme">app.lunara.mobile</string>

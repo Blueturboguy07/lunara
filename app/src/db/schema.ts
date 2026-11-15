@@ -1,7 +1,7 @@
 import Dexie, { type Table } from 'dexie'
 import { detectBbtShiftEstimates } from '../engine/cycle'
 import type { PregnancyDatingMethod } from '../engine/pregnancyDating'
-import type { MissedDoseEvent, RegimenRecord } from './regimen'
+import { MEDICATION_PLAN_STORES, type DoseEntry, type MedicationPlan } from './medicationPlans'
 
 export type Flow = 'light' | 'medium' | 'heavy' | 'clots'
 export type Discharge =
@@ -366,17 +366,8 @@ export class LunaraDB extends Dexie {
   settings!: Table<Setting, string>
   contentBookmarks!: Table<ContentBookmark, string>
   healthProfiles!: Table<HealthProfile, string>
-  /**
-   * Dated contraception and medication periods. One record per method period;
-   * records are closed by setting endDate, never deleted, so the engine can
-   * interpret any historical date accurately.
-   */
-  regimenRecords!: Table<RegimenRecord, string>
-  /**
-   * Missed and late dose events, keyed separately from DailyLog so adherence
-   * queries stay cheap and survive log edits.
-   */
-  missedDoseEvents!: Table<MissedDoseEvent, string>
+  medicationPlans!: Table<MedicationPlan, string>
+  doseEntries!: Table<DoseEntry, string>
 
   constructor() {
     super('lunara')
@@ -400,18 +391,10 @@ export class LunaraDB extends Dexie {
           .table<HealthProfile, string>('healthProfiles')
           .put(healthProfileFromLegacySettings(new Map(settings.map((item) => [item.key, item.value]))))
       })
-    // v3: regimen tables. No data migration — both tables start empty.
-    // regimenId is indexed on method+startDate so activeRegimenOn() is a fast
-    // bounded range scan rather than a full table load.
-    this.version(3).stores({
-      dailyLogs: 'date',
-      cycles: 'startDate',
-      settings: 'key',
-      contentBookmarks: 'slug',
-      healthProfiles: 'id',
-      regimenRecords: 'id, method, startDate, [method+startDate]',
-      missedDoseEvents: 'id, regimenId, date, [regimenId+date]',
-    })
+    // Version 4: birth control and medication plans (db/medicationPlans.ts). A phone
+    // on version 3 also has two tables that no code ever wrote; this version does not
+    // list them, so Dexie deletes them on the upgrade.
+    this.version(4).stores(MEDICATION_PLAN_STORES)
   }
 }
 

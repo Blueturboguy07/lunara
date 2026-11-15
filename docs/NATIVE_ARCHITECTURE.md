@@ -41,10 +41,12 @@ React / TypeScript product layer
 - Encryption keys live in Keychain on iOS and Android Keystore on Android.
 - User exports remain portable, versioned and independently encrypted.
 - Optional sync and backup may only transport opaque, client-encrypted data.
-- AI chat is opt-in and sends data off the phone only after the person agrees
-  ("AI chat sends data off this phone"). The provider receives the message, the
-  earlier messages of the chat and only the tracker categories the person ticks.
-  Without AI chat, health and cycle data stays on the phone.
+- AI chat is optional and sends data off the phone only after the person taps
+  "Turn on AI chat". The provider receives the question, the earlier messages
+  of the chat and an anonymized summary of only the tracker categories the
+  person ticks (`app/src/lib/aiPayload.ts`: no name, email, birth date,
+  location, device or account ID, no notes, days relative to today). Without AI
+  chat, health and cycle data stays on the phone.
 
 ## Native service boundaries
 

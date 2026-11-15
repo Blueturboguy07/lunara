@@ -10,6 +10,7 @@ import {
   type ReminderPermission,
   type ReminderPlan,
 } from '../engine/reminders'
+import { APP_NAME } from '../lib/appName'
 import { isNative } from './runtime'
 
 const DAILY_REMINDER_ID = 10_001
@@ -62,7 +63,7 @@ export async function scheduleDailyReminder(time: string): Promise<void> {
   await cancelDailyReminder()
   const notification: LocalNotificationSchema = {
     id: DAILY_REMINDER_ID,
-    title: 'Lunara',
+    title: APP_NAME,
     body: 'A gentle moment to check in with yourself.',
     channelId: CHANNEL_ID,
     schedule: {

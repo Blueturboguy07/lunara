@@ -9,7 +9,9 @@ import {
   publikLinkButtonLabel,
   publikModelsFrom,
   publikStatusLine,
+  publikStatusLineNoLinks,
   publikUrl,
+  PUBLIK_DATA_PATH,
   PUBLIK_LINK_STARTER_MICROS,
   PUBLIK_STARTS_AT_ZERO,
   PUBLIK_WHY_IT_COSTS,
@@ -20,6 +22,29 @@ import {
 function reply(status: number, body: unknown, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...headers } })
 }
+
+describe('where an AI chat message goes on publik', () => {
+  it('the founder statement: anonymized, no content stored, billing records only', () => {
+    expect(PUBLIK_DATA_PATH).toContain('AI chat is optional')
+    expect(PUBLIK_DATA_PATH).toContain('an anonymized summary of the tracker data you tick')
+    expect(PUBLIK_DATA_PATH).toContain('It has no name, email or birth date.')
+    expect(PUBLIK_DATA_PATH).toContain(
+      'publik does not store the content of your messages or answers, and does not use it for ads, analytics, training, or sale. It keeps billing records (model, token counts, cost) without content.',
+    )
+  })
+})
+
+describe('the status line outside the US storefront', () => {
+  it('the balance and the use only: no link, no offer', () => {
+    const base = { claimState: 'anonymous' as const, starterRemainingMicros: null, weekBudgetMicros: null, weekUsedMicros: null }
+    expect(publikStatusLineNoLinks(null)).toBe('Ready')
+    expect(publikStatusLineNoLinks({ ...base, balanceMicros: 0 } as never)).toBe('$0.00 left')
+    expect(publikStatusLineNoLinks({ ...base, balanceMicros: 50_000, starterRemainingMicros: 50_000 } as never)).toBe('$0.05 left')
+    for (const usage of [{ ...base, balanceMicros: 0 }, { ...base, balanceMicros: 50_000, starterRemainingMicros: 50_000 }]) {
+      expect(publikStatusLineNoLinks(usage as never)).not.toMatch(/link|free use|plan|pack/i)
+    }
+  })
+})
 
 describe('publik gateway errors (CONTRACT §1, §12.3)', () => {
   it('402 insufficient_credit while anonymous → needs_credit with the one link, top_up_url', async () => {

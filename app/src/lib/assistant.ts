@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk'
-import { AI_LIMITS } from './aiLimits'
+import type { AiPayload } from './aiPayload'
 import { isAppStoreBuild } from './buildFlags'
 import { providerFetch } from './providerFetch'
 import {
@@ -14,22 +14,12 @@ import {
 } from './publikApi'
 
 /**
- * Consent-scoped, bring-your-own-provider assistant transport.
+ * The AI transport: publik API and the bring-your-own-key providers.
  *
- * No health data is loaded here. Callers must build `approvedContext`
- * explicitly from the toggles the user selected for the current request.
+ * It sends an AiPayload (lib/aiPayload.ts) as it is and takes nothing else, so
+ * every request is the anonymized payload. The only other value it sends is
+ * the credential: the publik install key (billing) or the person's own key.
  */
-export const ASSISTANT_SYSTEM_PROMPT = `You are Lunara's health companion inside a privacy-first menstrual-health app. Explain cycles, fertility, pregnancy, symptoms, and perimenopause clearly and warmly.
-
-Safety rules:
-- You provide general education, not a diagnosis, prescription, or substitute for a clinician.
-- Use calibrated language such as "may", "often", and "can"; never claim clinical certainty from tracker data.
-- Never present calendar, temperature, or symptom tracking as reliable contraception.
-- Do not tell someone to start, stop, or change prescription medicine.
-- When symptoms could be urgent (including severe or one-sided pain, fainting, chest pain, trouble breathing, very heavy bleeding, pregnancy bleeding with pain, or thoughts of self-harm), clearly recommend prompt professional or emergency help.
-- State when the available information is insufficient.
-- Keep answers focused and readable.`
-
 export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
@@ -111,8 +101,6 @@ export interface AssistantReply {
   publik?: PublikUsage
 }
 
-export type ApprovedAssistantContext = Record<string, unknown>
-
 export const DEFAULT_ANTHROPIC_MODEL = 'claude-opus-5'
 export const DEFAULT_OPENAI_MODEL = 'gpt-5.6-terra'
 
@@ -136,17 +124,6 @@ function cleanBaseUrl(url: string): string {
   return url.trim().replace(/\/+$/, '')
 }
 
-function contextInstructions(approvedContext?: ApprovedAssistantContext): string {
-  if (!approvedContext || Object.keys(approvedContext).length === 0) {
-    return `${ASSISTANT_SYSTEM_PROMPT}\n\nThe user has not shared tracker data for this request. Do not imply that you can see it.`
-  }
-
-  return `${ASSISTANT_SYSTEM_PROMPT}
-
-The following JSON contains only tracker categories the user explicitly approved for this request. Treat it as self-reported, potentially incomplete data. Do not infer or request hidden categories:
-${JSON.stringify(approvedContext)}`
-}
-
 function apiError(provider: VendorProvider, status: number): Error {
   if (status === 401 || status === 403) {
     return new Error(
@@ -162,21 +139,9 @@ function apiError(provider: VendorProvider, status: number): Error {
   return new Error(`Assistant request failed (${status}). Check the provider and model settings.`)
 }
 
-/** The message and the earlier messages that go with it (the agreement screen lists the same limits). */
-export function boundedHistory(history: ChatMessage[]): ChatMessage[] {
-  return history.slice(-AI_LIMITS.chatMessages).map((message) => ({
-    role: message.role,
-    content:
-      message.content.length > AI_LIMITS.messageChars
-        ? `${message.content.slice(0, AI_LIMITS.messageChars)}\n[message truncated]`
-        : message.content,
-  }))
-}
-
 async function askAnthropic(
   config: AssistantConfig,
-  history: ChatMessage[],
-  approvedContext: ApprovedAssistantContext | undefined,
+  payload: AiPayload,
   fetchImpl: FetchLike,
 ): Promise<string> {
   const credential = config.apiKey?.trim()
@@ -216,8 +181,8 @@ async function askAnthropic(
     response = await client.messages.create({
       model: config.model || DEFAULT_ANTHROPIC_MODEL,
       max_tokens: 1200,
-      system: contextInstructions(approvedContext),
-      messages: boundedHistory(history),
+      system: payload.system,
+      messages: payload.messages.map((message) => ({ role: message.role, content: message.content })),
     })
   } catch (reason) {
     if (reason instanceof Anthropic.APIError && typeof reason.status === 'number') {
@@ -269,8 +234,7 @@ function extractOpenAIText(payload: unknown): string {
  */
 async function askResponses(
   config: AssistantConfig,
-  history: ChatMessage[],
-  approvedContext: ApprovedAssistantContext | undefined,
+  payload: AiPayload,
   fetchImpl: FetchLike,
 ): Promise<AssistantReply> {
   const publik = config.provider === 'publik'
@@ -298,8 +262,8 @@ async function askResponses(
       },
       body: JSON.stringify({
         model,
-        instructions: contextInstructions(approvedContext),
-        input: boundedHistory(history).map((message) => ({
+        instructions: payload.system,
+        input: payload.messages.map((message) => ({
           role: message.role,
           content: message.content,
         })),
@@ -329,23 +293,21 @@ async function askResponses(
 
 export async function askAssistantDetailed(
   config: AssistantConfig,
-  history: ChatMessage[],
-  approvedContext?: ApprovedAssistantContext,
+  payload: AiPayload,
   fetchImpl: FetchLike = providerFetch,
 ): Promise<AssistantReply> {
-  if (history.length === 0) throw new Error('Write a message first.')
+  if (payload.messages.length === 0) throw new Error('Write a message first.')
   if (config.provider === 'anthropic') {
-    return { text: await askAnthropic(config, history, approvedContext, fetchImpl) }
+    return { text: await askAnthropic(config, payload, fetchImpl) }
   }
-  return askResponses(config, history, approvedContext, fetchImpl)
+  return askResponses(config, payload, fetchImpl)
 }
 
 /** Unchanged signature for existing callers and tests. */
 export async function askAssistant(
   config: AssistantConfig,
-  history: ChatMessage[],
-  approvedContext?: ApprovedAssistantContext,
+  payload: AiPayload,
   fetchImpl: FetchLike = providerFetch,
 ): Promise<string> {
-  return (await askAssistantDetailed(config, history, approvedContext, fetchImpl)).text
+  return (await askAssistantDetailed(config, payload, fetchImpl)).text
 }

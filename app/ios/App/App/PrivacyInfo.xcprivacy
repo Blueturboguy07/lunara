@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  Lunara (app target). Checked against the code on 2026-11-13:
+  Lunara (app target). Checked against the code on 2026-11-14:
   - Required-reason API: UserDefaults only.
     CA92.1: UserDefaults.standard keeps values of this app only (the HealthKit
             "asked" flag, the widget snapshot, launch arguments of a test run,
@@ -9,22 +9,28 @@
     1C8F.1: UserDefaults(suiteName: "group.app.lunara.mobile") shares the widget
             snapshot with the widget extension in the same App Group.
     No file-timestamp, boot-time, disk-space or keyboard API in Lunara's code.
+    The App Store storefront read (StoreKit Storefront.current, for the purchase-link
+    rule) is not a required-reason API and sends nothing.
   - Tracking: none. No ad SDK, no tracking domains.
   - Collected data = what the app sends off the phone:
     DeviceID            the publik install ID, the install key and the random
-                        usage-counting ID (sign-in, usage counting).
-    ProductInteraction  "app_opened" and "active_session" (usage counting).
-    OtherUserContent    the chat messages (the message and up to 15 earlier
-                        ones), only when the person uses Lunara AI and agreed on
-                        "AI chat sends data off this phone" for that provider.
-    Health, SensitiveInfo: only the tracker categories the person ticks and
-                        agreed to for that provider.
-                        On publik API they go through publik to its model
-                        provider; publik does not use them for any other
-                        purpose (no ads, no analytics, no training, no sale); a
-                        model provider may keep them under its own terms. With
-                        the person's own key they go straight to that provider
-                        and publik never sees them. Not linked.
+                        usage-counting ID (sign-in, usage counting). Linked.
+    ProductInteraction  "app_opened" and "active_session" (usage counting). Linked.
+    OtherUserContent    the chat: the question and up to 15 earlier messages of
+                        the same chat, only when the person turned on AI chat
+                        ("Turn on AI chat") for that provider. Not linked.
+    Health, SensitiveInfo: an anonymized summary (src/lib/aiPayload.ts) of only the
+                        tracker categories the person ticks: no name, email, birth
+                        date, location, device or account ID, no notes, and days
+                        relative to today. Not linked.
+    On publik API the request goes through publik to its AI provider. publik does
+    not store the content of messages or answers, and does not use it for ads,
+    analytics, training or sale; it keeps billing records (model, token counts,
+    cost) without content. With the person's own key the request goes straight to
+    that provider and publik never sees it. Health data is never stored off the
+    phone by Lunara or publik. The three content types stay declared because the AI
+    provider processes a message under its own terms, and those terms can keep it
+    longer than the request.
 -->
 <plist version="1.0">
 <dict>

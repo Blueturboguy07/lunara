@@ -24,6 +24,7 @@ import { signInWithPublik } from '../components/PublikGate'
 import { pushBackup, restoreBackup } from '../lib/backup'
 import { DATA_STAYS_ON_PHONE } from '../lib/healthConsent'
 import { gateMode } from '../lib/buildFlags'
+import { loadStorefront, purchaseLinksAllowed } from '../lib/storefront'
 import { localToday } from '../lib/dates'
 import {
   accountDeletionUrl,
@@ -34,6 +35,7 @@ import {
   isAdultBirthYear,
   signedInHere,
   publikStatusLine,
+  publikStatusLineNoLinks,
   setChoice,
   setUsageCounting,
   usageCountingOn,
@@ -202,9 +204,10 @@ export function Settings() {
         setHasAnthropicKey(Boolean(anthropicKey))
         setHasPublik(publikKey)
         if (publikKey) {
-          void fetchPublikWallet()
-            .then((wallet) => {
-              if (alive) setPublikLine(publikStatusLine(wallet))
+          void Promise.all([fetchPublikWallet(), loadStorefront()])
+            .then(([wallet]) => {
+              // Outside the US App Store storefront: the balance only, no link and no offer (lib/storefront.ts).
+              if (alive) setPublikLine(purchaseLinksAllowed() ? publikStatusLine(wallet) : publikStatusLineNoLinks(wallet))
             })
             .catch(() => undefined)
         }
@@ -1289,7 +1292,7 @@ export function Settings() {
       </Section>
 
       <p className="muted" style={{ textAlign: 'center', marginTop: 8, lineHeight: 1.5 }}>
-        Lunara is open source (AGPL-3.0) and not affiliated with Flo Health Inc. Not a medical
+        Lunara is open source (AGPL-3.0). Not a medical
         device. Removing the app deletes its local history — keep an encrypted backup.
       </p>
     </div>

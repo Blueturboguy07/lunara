@@ -3,6 +3,7 @@ import Foundation
 import HealthKit
 import LocalAuthentication
 import Security
+import StoreKit
 import UIKit
 import WidgetKit
 
@@ -26,7 +27,8 @@ public final class LunaraNativePlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "clearWidgetSnapshot", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "printReport", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "publikLaunchOptions", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "publikSelfTestDone", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "publikSelfTestDone", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "appStoreStorefront", returnType: CAPPluginReturnPromise)
     ]
 
     private let keychainService = "app.lunara.mobile.vault"
@@ -119,6 +121,18 @@ public final class LunaraNativePlugin: CAPPlugin, CAPBridgedPlugin {
         fflush(stdout)
         call.resolve()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { exit(0) }
+    }
+
+    // MARK: App Store storefront
+
+    /// The App Store storefront country (ISO 3166-1 alpha-3, for example "USA"), or null when
+    /// StoreKit has none. The web layer shows purchase links only on the US storefront
+    /// (src/lib/storefront.ts). This reads no account data and makes no purchase.
+    @objc public func appStoreStorefront(_ call: CAPPluginCall) {
+        Task {
+            let country = await Storefront.current?.countryCode
+            call.resolve(["countryCode": country ?? NSNull()])
+        }
     }
 
     // MARK: Secure vault

@@ -103,7 +103,7 @@ export const PUBLIK_WHY_IT_COSTS =
 
 /** Where an AI chat message goes on publik API. The agreement screen (lib/healthConsent.ts) lists the exact data. */
 export const PUBLIK_DATA_PATH =
-  'AI chat asks before it sends anything. Then your message, the earlier messages in the chat and the tracker data you tick go through publik’s servers to the AI model provider that publik uses. publik does not use this data for any other purpose: no ads, no analytics, no training, no sale.'
+  'AI chat is optional and asks before it sends anything. Then your question, the earlier messages in this chat and an anonymized summary of the tracker data you tick go through publik’s servers to the AI provider. It has no name, email or birth date. publik does not store the content of your messages or answers, and does not use it for ads, analytics, training, or sale. It keeps billing records (model, token counts, cost) without content.'
 
 /** The primary button while anonymous (CONTRACT §12.1c) and once claimed (§12.2). */
 export function publikLinkButtonLabel(claimState: PublikClaimState | null): string {
@@ -273,6 +273,16 @@ export function publikStatusLine(usage: PublikUsage | null): string {
 }
 
 /** The balance line of the first-run card (CONTRACT §12.1a). */
+/** The status line where purchase links are not allowed (lib/storefront.ts): the balance and the use only, no link and no offer. */
+export function publikStatusLineNoLinks(usage: PublikUsage | null): string {
+  if (!usage || usage.balanceMicros === null) return 'Ready'
+  const left = `${dollars(usage.balanceMicros)} left`
+  if (usage.weekBudgetMicros !== null && usage.weekUsedMicros !== null) {
+    return `${left} · this week ${dollars(usage.weekUsedMicros)} of ${dollars(usage.weekBudgetMicros)}`
+  }
+  return usage.weekUsedMicros !== null ? `${left} · ${dollars(usage.weekUsedMicros)} used this week` : left
+}
+
 export function publikBalanceLine(balanceMicros: number | null, claimState: PublikClaimState | null): string {
   if (balanceMicros === null) return 'Checking your publik balance…'
   if (claimState === 'claimed') return `${dollars(balanceMicros)} of publik usage available`
