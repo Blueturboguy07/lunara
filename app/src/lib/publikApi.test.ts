@@ -32,6 +32,7 @@ describe('where an AI chat message goes on publik', () => {
   it('the founder statement: anonymized, no content stored, billing records only', () => {
     expect(PUBLIK_DATA_PATH).toContain('AI chat is optional')
     expect(PUBLIK_DATA_PATH).toContain('an anonymized summary of the tracker data you tick')
+    expect(PUBLIK_DATA_PATH).toContain('the AI provider that answers (for example Anthropic, Google or OpenAI)')
     expect(PUBLIK_DATA_PATH).toContain('It has no name, email or birth date.')
     expect(PUBLIK_DATA_PATH).toContain(
       'publik does not store the content of your messages or answers, and does not use it for ads, analytics, training, or sale. It keeps billing records (model, token counts, cost) without content.',

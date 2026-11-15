@@ -81,7 +81,7 @@ type FetchLike = typeof fetch
 
 export const APP_SLUG = "lunara"
 /** Mirrors app/package.json `version` and PUBLIK_BUILD.appVersion; publikBuild.test.ts pins all three equal. */
-export const APP_VERSION = "0.2.4"
+export const APP_VERSION = "0.2.5"
 /** Lunara AI (adults only) calls a model, so the gate asks how to pay for it. */
 export const USES_AI = true
 const PUBLIK_ORIGIN = 'https://publikhq.com'
@@ -959,8 +959,9 @@ export async function needsSignInOnDemand(): Promise<boolean> {
 //   sign-in:          claim_url + in_app=1 (publik redirects to /in-app/claim/<CODE>)
 //   account deletion: /in-app/delete-account
 //   privacy policy:   /in-app/privacy
+//   help and support: /in-app/support?app=lunara (a reported AI answer adds topic and reason)
 // The US-storefront "Get a plan" and top-up links (lib/storefront.ts) stay on the normal site.
-// The test hook (PUBLIK_API_BASE_URL) moves all three to its origin.
+// The test hook (PUBLIK_API_BASE_URL) moves all of them to its origin.
 
 /** The note when publik gave no claim_url: the app opens no other page instead. */
 export const NO_SIGN_IN_LINK = 'publik sent no sign-in link. Try again.'
@@ -988,6 +989,35 @@ export function accountDeletionUrl(): string {
 /** publik's privacy policy. */
 export function publikPrivacyUrl(): string {
   return `${origin()}/in-app/privacy`
+}
+
+/** The reasons a person can pick for "Report this answer" (App Store rule 1.2). Only the id leaves the phone. */
+export const REPORT_REASONS = [
+  { id: 'wrong', label: 'Wrong or misleading' },
+  { id: 'unsafe', label: 'Unsafe or harmful' },
+  { id: 'offensive', label: 'Offensive' },
+  { id: 'other', label: 'Something else' },
+] as const
+
+export type ReportReason = (typeof REPORT_REASONS)[number]['id']
+
+/** The words under each AI answer and in the reason picker. */
+export const REPORT_ANSWER_LABEL = 'Report this answer'
+export const REPORT_ANSWER_NOTE =
+  'Lunara opens publik’s support page with only the app name and the reason you pick. It sends no chat text and no health data. You can paste text on that page if you choose.'
+
+/**
+ * publik's help and support page for the in-app sheet, with the app name. A reported AI answer adds
+ * only `topic=ai-answer` and the reason id: never the chat text, the answer or health data.
+ * The person can paste text on the page if they choose to.
+ */
+export function publikSupportUrl(report?: { reason: ReportReason }): string {
+  const query = new URLSearchParams({ app: APP_SLUG })
+  if (report) {
+    query.set('topic', 'ai-answer')
+    query.set('reason', report.reason)
+  }
+  return `${origin()}/in-app/support?${query.toString()}`
 }
 
 /**

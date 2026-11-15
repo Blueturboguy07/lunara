@@ -61,9 +61,15 @@ export interface HealthDestination {
   ownAccountWith?: string
 }
 
+/**
+ * The AI providers publik can send a message to (App Store rule 5.1.2(i): name who gets the data).
+ * Neither the wallet nor the install answer lists the providers, so the screen names examples.
+ */
+export const PUBLIK_PROVIDER_EXAMPLES = 'for example Anthropic, Google or OpenAI'
+
 /** Where a message goes, by the provider Lunara AI uses. */
 export function healthDestination(provider: AssistantProvider, baseUrl?: string): HealthDestination {
-  if (provider === 'publik') return { id: 'publik', name: 'publik (publikhq.com) and the AI model provider that publik uses' }
+  if (provider === 'publik') return { id: 'publik', name: `publik (publikhq.com) and the AI provider that answers (${PUBLIK_PROVIDER_EXAMPLES})` }
   if (provider === 'anthropic') return { id: 'anthropic', name: 'Anthropic', ownAccountWith: 'Anthropic' }
   const custom = baseUrl?.trim()
   if (custom) {
@@ -87,11 +93,11 @@ function capitalized(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1)
 }
 
-/** The body of the screen after its title, one paragraph per entry (founder text, Nov 14 2026). */
+/** The body of the screen after its title, one paragraph per entry (founder text, Nov 14 2026; publik names the receivers for rule 5.1.2(i)). */
 export function chatAgreementBody(destination: HealthDestination): string[] {
   if (!destination.ownAccountWith) {
     return [
-      'To answer you, Lunara sends your question and an anonymized summary of your cycle data to the AI provider. It has no name, email or birth date.',
+      `To answer you, Lunara sends your question and an anonymized summary of your cycle data to publik (publikhq.com). publik sends it to the AI provider that answers (${PUBLIK_PROVIDER_EXAMPLES}). It has no name, email or birth date.`,
       'publik does not store the content of your messages or answers, and does not use it for ads, analytics, training, or sale. It keeps billing records (model, token counts, cost) without content.',
       'The AI provider processes your message to answer it, under its own terms.',
     ]

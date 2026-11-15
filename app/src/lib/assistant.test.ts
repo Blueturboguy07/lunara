@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  AI_ANSWER_NOTE,
   acceptedAnthropicCredential,
   anthropicCredentialHint,
   anthropicCredentialKind,
@@ -376,5 +377,11 @@ describe('the OpenAI slot never takes an Anthropic credential', () => {
       ).rejects.toThrow(/Anthropic credential/)
     }
     expect(never).not.toHaveBeenCalled()
+  })
+})
+
+describe('the AI chat note (App Store rule 1.2)', () => {
+  it('says that answers can be wrong and are not medical advice', () => {
+    expect(AI_ANSWER_NOTE).toBe('AI answers can be wrong. They are not medical advice, diagnosis or emergency care.')
   })
 })

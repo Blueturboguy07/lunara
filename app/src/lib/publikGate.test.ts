@@ -68,7 +68,7 @@ vi.mock('../db/schema', () => {
 vi.mock('./publikBuild', () => ({
   PUBLIK_BUILD: {
     appSlug: 'lunara',
-    appVersion: '0.2.4',
+    appVersion: '0.2.5',
     appToken: 'pat_lunara_' + 'g'.repeat(32),
     baseUrl: 'https://publikhq.com/api/v1',
     disclosureVersion: 3,
@@ -175,6 +175,10 @@ import {
   onPublikSignOut,
   openWithoutWall,
   publikPrivacyUrl,
+  publikSupportUrl,
+  REPORT_ANSWER_LABEL,
+  REPORT_ANSWER_NOTE,
+  REPORT_REASONS,
   signedInHere,
   signInOnDemand,
   type GateAction,
@@ -342,7 +346,7 @@ describe('ensureSignedIn against a fake publik', () => {
     expect(events[0]!.auth).toBe('Bearer pk_live_gatetest')
     const first = JSON.parse(events[0]!.body!) as Record<string, unknown>
     expect(Object.keys(first).sort()).toEqual(['app', 'app_version', 'event', 'install_id', 'os', 'v'])
-    expect(first).toMatchObject({ v: 1, app: 'lunara', event: 'app_opened', app_version: '0.2.4', os: 'ios' })
+    expect(first).toMatchObject({ v: 1, app: 'lunara', event: 'app_opened', app_version: '0.2.5', os: 'ios' })
     expect(String(first.install_id)).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
     await vi.advanceTimersByTimeAsync(30 * 60_000)
     expect(JSON.parse(telemetryCalls()[1]!.body!)).toMatchObject({ event: 'active_session', install_id: first.install_id })
@@ -496,9 +500,9 @@ describe('the self-test and the test hook', () => {
     const { ui, screens } = scriptedUI()
     void ensureSignedIn(ui)
     await vi.advanceTimersByTimeAsync(1_000)
-    expect(native.selfTestLines).toEqual(['publik self-test: ok lunara 0.2.4'])
+    expect(native.selfTestLines).toEqual(['publik self-test: ok lunara 0.2.5'])
     expect(net.calls.map((c) => c.url)).toEqual(['https://publikhq.com/api/v1/installs', 'https://publikhq.com/api/v1/wallet'])
-    expect(JSON.parse(net.calls[0]!.body!)).toMatchObject({ app_slug: 'lunara', app_version: '0.2.4', os: 'ios' })
+    expect(JSON.parse(net.calls[0]!.body!)).toMatchObject({ app_slug: 'lunara', app_version: '0.2.5', os: 'ios' })
     expect(screens).toEqual([])
     log.mockRestore()
   })
@@ -698,7 +702,7 @@ describe('optional mode: no wall, sign-in on demand', () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
     void openWithoutWall()
     await vi.advanceTimersByTimeAsync(1_000)
-    expect(native.selfTestLines).toEqual(['publik self-test: ok lunara 0.2.4'])
+    expect(native.selfTestLines).toEqual(['publik self-test: ok lunara 0.2.5'])
     log.mockRestore()
   })
 })
@@ -717,6 +721,33 @@ describe('the in-app sheet opens only publik\'s bare in-app pages', () => {
     expect(publikPrivacyUrl()).toBe('https://publikhq.com/in-app/privacy')
     expect(accountDeletionUrl()).not.toContain('/settings/profile')
     expect(publikPrivacyUrl()).not.toMatch(/publikhq\.com\/privacy/)
+  })
+
+  it('Help and support: the in-app support page with the app name', () => {
+    expect(publikSupportUrl()).toBe('https://publikhq.com/in-app/support?app=lunara')
+  })
+})
+
+describe('Report this answer (App Store rule 1.2)', () => {
+  it('opens the support page with the app name, the topic and the reason the person picked', () => {
+    expect(REPORT_ANSWER_LABEL).toBe('Report this answer')
+    expect(REPORT_REASONS.map((r) => r.id)).toEqual(['wrong', 'unsafe', 'offensive', 'other'])
+    expect(publikSupportUrl({ reason: 'unsafe' })).toBe('https://publikhq.com/in-app/support?app=lunara&topic=ai-answer&reason=unsafe')
+    for (const reason of REPORT_REASONS) {
+      const url = new URL(publikSupportUrl({ reason: reason.id }))
+      expect(url.origin + url.pathname).toBe('https://publikhq.com/in-app/support')
+      expect([...url.searchParams.keys()]).toEqual(['app', 'topic', 'reason'])
+      expect(url.searchParams.get('reason')).toBe(reason.id)
+    }
+  })
+
+  it('sends no chat text and no health data: the function takes only a reason id', () => {
+    // The URL has three fixed keys and no free text; the type allows only a reason id.
+    expect(publikSupportUrl.length).toBeLessThanOrEqual(1)
+    const url = publikSupportUrl({ reason: 'wrong' })
+    expect(url).not.toMatch(/content|message|answer=|cycle|period|symptom|text=/i)
+    expect(REPORT_ANSWER_NOTE).toContain('no chat text and no health data')
+    expect(REPORT_ANSWER_NOTE).toContain('You can paste text on that page if you choose.')
   })
 })
 
@@ -745,6 +776,7 @@ describe('Delete account', () => {
     await loadLaunchOptions()
     expect(accountDeletionUrl()).toBe('http://127.0.0.1:8787/in-app/delete-account')
     expect(publikPrivacyUrl()).toBe('http://127.0.0.1:8787/in-app/privacy')
+    expect(publikSupportUrl({ reason: 'other' })).toBe('http://127.0.0.1:8787/in-app/support?app=lunara&topic=ai-answer&reason=other')
   })
 
   it('revokes the key and deletes the publik data on this phone, but not the cycle data or "Count my use: Off"', async () => {
@@ -790,6 +822,7 @@ describe('the test hooks work only in a test build', () => {
     await loadLaunchOptions()
     expect(accountDeletionUrl()).toBe('https://publikhq.com/in-app/delete-account')
     expect(publikPrivacyUrl()).toBe('https://publikhq.com/in-app/privacy')
+    expect(publikSupportUrl()).toBe('https://publikhq.com/in-app/support?app=lunara')
     void ensureSignedIn(scriptedUI({ [WORDS.title]: 'wait' }).ui)
     await vi.advanceTimersByTimeAsync(1_000)
     expect(native.selfTestLines).toEqual([])
@@ -805,6 +838,7 @@ describe('the test hooks work only in a test build', () => {
     await loadLaunchOptions()
     expect(accountDeletionUrl()).toBe('http://10.0.2.2:8787/in-app/delete-account')
     expect(publikPrivacyUrl()).toBe('http://10.0.2.2:8787/in-app/privacy')
+    expect(publikSupportUrl()).toBe('http://10.0.2.2:8787/in-app/support?app=lunara')
   })
 
   it('PUBLIK_API_BASE_URL must point at this computer (127.0.0.1, localhost, 10.0.2.2)', async () => {

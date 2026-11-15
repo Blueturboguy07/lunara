@@ -29,6 +29,7 @@ import { localToday } from '../lib/dates'
 import {
   accountDeletionUrl,
   publikPrivacyUrl,
+  publikSupportUrl,
   deletePublikDataOnThisPhone,
   disconnectPublik,
   fetchPublikWallet,
@@ -1271,6 +1272,10 @@ export function Settings() {
             <span className="muted">{publikBusy ? 'Signing out…' : '›'}</span>
           </button>
         )}
+        <button className="setting-row" onClick={() => void openPublikPage(publikSupportUrl())}>
+          <span>Help and support</span>
+          <span className="muted">›</span>
+        </button>
         <button className="setting-row" onClick={() => void openPublikPage(publikPrivacyUrl())}>
           <span>publik privacy policy</span>
           <span className="muted">›</span>

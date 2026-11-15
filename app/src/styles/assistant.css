@@ -606,6 +606,62 @@
   box-shadow: 0 8px 21px rgba(214, 75, 104, 0.14);
 }
 
+/* One message and, under an AI answer, "Report this answer" (App Store rule 1.2). */
+.assistant-overlay .chat-turn {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.assistant-overlay .chat-report-button,
+.assistant-overlay .chat-report-cancel {
+  min-height: 32px;
+  padding: 6px 4px;
+  align-self: flex-start;
+  color: var(--ink-500);
+  font-size: 10px;
+  font-weight: 650;
+  text-decoration: underline;
+  text-decoration-color: var(--line-medium);
+  text-underline-offset: 3px;
+  background: none;
+}
+
+.assistant-overlay .chat-report {
+  width: min(86%, 430px);
+  padding: 10px 12px 4px;
+  display: grid;
+  gap: 8px;
+  color: var(--ink-650);
+  font-size: 11px;
+  line-height: 1.45;
+  background: var(--paper-50);
+  border: 1px solid var(--line-soft);
+  border-radius: 14px;
+}
+
+.assistant-overlay .chat-report p {
+  margin: 0;
+}
+
+.assistant-overlay .chat-report-reasons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.assistant-overlay .chat-report-reasons button {
+  min-height: 36px;
+  padding: 7px 11px;
+  color: var(--ink-800);
+  font-size: 11px;
+  font-weight: 650;
+  background: var(--surface-raised);
+  border: 1px solid var(--line-medium);
+  border-radius: 999px;
+}
+
 .chat-bubble-mark {
   width: 22px;
   height: 22px;

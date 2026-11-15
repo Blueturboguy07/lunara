@@ -2,6 +2,7 @@ import { Browser } from '@capacitor/browser'
 import { useEffect, useRef, useState } from 'react'
 import { getSetting, removeSetting, setSetting, SK } from '../db/schema'
 import {
+  AI_ANSWER_NOTE,
   acceptedAnthropicCredential,
   anthropicCredentialHint,
   anthropicCredentialKind,
@@ -60,8 +61,12 @@ import {
   publikLinkButtonLabel,
   publikLocalState,
   publikStatusLine,
+  publikSupportUrl,
   usageFromBalance,
   PublikApiError,
+  REPORT_ANSWER_LABEL,
+  REPORT_ANSWER_NOTE,
+  REPORT_REASONS,
   resolveProvider,
   setChoice,
   type PublikClaimState,
@@ -151,6 +156,8 @@ export function AssistantScreen() {
   // "AI chat is optional" (lib/healthConsent.ts): nothing goes to a provider before "Turn on AI chat".
   // `text` is the message that waits for the answer (null: the screen came when AI chat opened).
   const [chatAsk, setChatAsk] = useState<{ text: string | null; destination: HealthDestination } | null>(null)
+  // "Report this answer" (App Store rule 1.2): the answer whose reason picker is open.
+  const [reportingAnswer, setReportingAnswer] = useState<number | null>(null)
   const subscriptionTokens = claudeSubscriptionTokensAllowed()
   // Purchase links, buttons and prices: US App Store storefront only (lib/storefront.ts).
   const purchaseLinks = usePurchaseLinks()
@@ -313,6 +320,7 @@ export function AssistantScreen() {
     setPublikError(null)
     // A new provider starts a new chat: the earlier messages never go to it.
     setMessages([])
+    setReportingAnswer(null)
     setChatSentTo(null)
     // A waiting message was for the earlier provider; the new one gets its own agreement screen.
     setChatAsk(null)
@@ -1002,13 +1010,41 @@ export function AssistantScreen() {
               </div>
             )}
             {messages.map((message, index) => (
-              <div key={index} className={`chat-bubble ${message.role}`}>
-                {message.role === 'assistant' && (
-                  <span className="chat-bubble-mark" aria-hidden="true">
-                    <LunaraMark decorative size={14} />
-                  </span>
+              <div key={index} className={`chat-turn ${message.role}`}>
+                <div className={`chat-bubble ${message.role}`}>
+                  {message.role === 'assistant' && (
+                    <span className="chat-bubble-mark" aria-hidden="true">
+                      <LunaraMark decorative size={14} />
+                    </span>
+                  )}
+                  <span>{message.content}</span>
+                </div>
+                {message.role === 'assistant' && reportingAnswer !== index && (
+                  <button className="chat-report-button" onClick={() => setReportingAnswer(index)}>
+                    {REPORT_ANSWER_LABEL}
+                  </button>
                 )}
-                <span>{message.content}</span>
+                {message.role === 'assistant' && reportingAnswer === index && (
+                  <div className="chat-report" role="group" aria-label={`${REPORT_ANSWER_LABEL}: pick a reason`}>
+                    <p>{REPORT_ANSWER_NOTE}</p>
+                    <div className="chat-report-reasons">
+                      {REPORT_REASONS.map((reason) => (
+                        <button
+                          key={reason.id}
+                          onClick={() => {
+                            setReportingAnswer(null)
+                            openPublikLink(publikSupportUrl({ reason: reason.id }))
+                          }}
+                        >
+                          {reason.label}
+                        </button>
+                      ))}
+                    </div>
+                    <button className="chat-report-cancel" onClick={() => setReportingAnswer(null)}>
+                      Cancel
+                    </button>
+                  </div>
+                )}
               </div>
             ))}
             {busy && (
@@ -1057,7 +1093,7 @@ export function AssistantScreen() {
               </svg>
             </button>
           </div>
-          <p>Educational support only · not diagnosis or emergency care</p>
+          <p>{AI_ANSWER_NOTE}</p>
         </form>
       )}
     </div>

@@ -84,6 +84,9 @@ export function openAiKeyProblem(key: string): string | null {
 export const CLI_TOKEN_PREFIX = 'sk-ant-oat'
 export const ANTHROPIC_API_KEY_PREFIX = 'sk-ant-api'
 
+/** The note under the AI chat composer (App Store rule 1.2: AI content). */
+export const AI_ANSWER_NOTE = 'AI answers can be wrong. They are not medical advice, diagnosis or emergency care.'
+
 export interface AssistantConfig {
   provider: AssistantProvider
   /** Kept in the native secure vault by the UI; never written to the cycle database. */

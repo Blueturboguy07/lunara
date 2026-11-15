@@ -199,7 +199,7 @@ export function usageFromBalance(balanceMicros: number | null, claimState: Publi
 
 /** Where an AI chat message goes on publik API. The agreement screen (lib/healthConsent.ts) lists the exact data. */
 export const PUBLIK_DATA_PATH =
-  'AI chat is optional and asks before it sends anything. Then your question, the earlier messages in this chat and an anonymized summary of the tracker data you tick go through publik’s servers to the AI provider. It has no name, email or birth date. publik does not store the content of your messages or answers, and does not use it for ads, analytics, training, or sale. It keeps billing records (model, token counts, cost) without content.'
+  'AI chat is optional and asks before it sends anything. Then your question, the earlier messages in this chat and an anonymized summary of the tracker data you tick go through publik’s servers to the AI provider that answers (for example Anthropic, Google or OpenAI). It has no name, email or birth date. publik does not store the content of your messages or answers, and does not use it for ads, analytics, training, or sale. It keeps billing records (model, token counts, cost) without content.'
 
 /** The primary button while anonymous (CONTRACT §12.1c) and once claimed (§12.2). */
 export function publikLinkButtonLabel(claimState: PublikClaimState | null): string {

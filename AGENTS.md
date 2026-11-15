@@ -8,6 +8,10 @@
 - No amount of money for AI use anywhere in the app (founder rule, Nov 14 2026): AI use shows only as a percent of the plan limit with a bar (`publikStatusLine` / `PlanUseMeter`), or "Plan active" / "Plan limit reached". Never show a server text that names money (`withoutMoney`). `app/src/lib/noMoneyShown.test.ts` fails when an app file has "$" followed by a digit.
 - 402 / plan limit: the app's own words (`planLimitText`: limit reached, when it resets, the storefront rule, "use your own key") plus error.top_up_url only on the US App Store storefront (below)
 - When publik sends no claim_url, open nothing: show "publik sent no sign-in link. Try again."
+- App Store rule 1.2: every AI answer has "Report this answer". The person picks a reason in the app; the in-app sheet opens `publikSupportUrl({ reason })` (`/in-app/support?app=lunara&topic=ai-answer&reason=<id>`). Never put chat text or health data in that URL. The chat note says AI answers can be wrong and are not medical advice (`AI_ANSWER_NOTE`).
+- Settings → publik → Help and support opens `publikSupportUrl()` (`/in-app/support?app=lunara`).
+- App Store rule 5.1.2(i): the publik agreement text names publik (publikhq.com) and the AI provider that answers (`PUBLIK_PROVIDER_EXAMPLES`). When the wallet or the install answer lists the true providers, show that list instead.
+- The store build has no local-network permission (no NSLocalNetworkUsageDescription): no screen lets a person enter a local AI address.
 - Never print or log a key
 - Docs: https://publikhq.com/llms.txt, https://publikhq.com/developers, https://publikhq.com/skills/api.md
 

@@ -303,7 +303,11 @@ fails when they differ.
   data on this phone, asks separately before it deletes cycle data, then opens
   publik's in-app deletion page (`https://publikhq.com/in-app/delete-account`)
   in the in-app browser. Settings → publik → Sign out signs this phone out and
-  keeps your data. Settings → publik → publik privacy policy opens
+  keeps your data. Settings → publik → Help and support opens
+  `https://publikhq.com/in-app/support?app=lunara` in the in-app browser.
+  Under each AI answer, "Report this answer" lets you pick a reason, then opens
+  the same support page with only the app name and that reason. It sends no
+  chat text and no health data. Settings → publik → publik privacy policy opens
   `https://publikhq.com/in-app/privacy` in the in-app browser. The in-app
   browser opens only these in-app pages; the US-storefront "Get a plan" and
   top-up links open the normal publik site.
@@ -312,8 +316,9 @@ fails when they differ.
   backup server cannot read). Before the first AI chat message to a provider,
   Lunara shows the screen "AI chat is optional". On publik API it says: "To
   answer you, Lunara sends your question and an anonymized summary of your
-  cycle data to the AI provider. It has no name, email or birth date. publik
-  does not store the content of your messages or answers, and does not use it
+  cycle data to publik (publikhq.com). publik sends it to the AI provider that
+  answers (for example Anthropic, Google or OpenAI). It has no name, email or
+  birth date. publik does not store the content of your messages or answers, and does not use it
   for ads, analytics, training, or sale. It keeps billing records (model, token
   counts, cost) without content. The AI provider processes your message to
   answer it, under its own terms." With your own key (Anthropic, OpenAI, or an

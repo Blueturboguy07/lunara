@@ -33,7 +33,10 @@ const stored = () => JSON.parse(settings.store.get('aiHealthConsent') ?? 'null')
 
 describe('AI chat is optional: the screen before the first message', () => {
   it('names the receiver', () => {
-    expect(healthDestination('publik')).toEqual({ id: 'publik', name: 'publik (publikhq.com) and the AI model provider that publik uses' })
+    expect(healthDestination('publik')).toEqual({
+      id: 'publik',
+      name: 'publik (publikhq.com) and the AI provider that answers (for example Anthropic, Google or OpenAI)',
+    })
     expect(healthDestination('anthropic')).toEqual({ id: 'anthropic', name: 'Anthropic', ownAccountWith: 'Anthropic' })
     expect(healthDestination('openai')).toEqual({ id: 'openai', name: 'OpenAI', ownAccountWith: 'OpenAI' })
     expect(healthDestination('openai', 'https://llm.example.org/v1')).toEqual({
@@ -46,7 +49,7 @@ describe('AI chat is optional: the screen before the first message', () => {
   it('publik: the founder text, with the buttons "Turn on AI chat" and "Not now"', () => {
     expect([CHAT_AGREEMENT_TITLE, ...chatAgreementBody(healthDestination('publik'))].join(' ')).toBe(
       'AI chat is optional ' +
-        'To answer you, Lunara sends your question and an anonymized summary of your cycle data to the AI provider. It has no name, email or birth date. ' +
+        'To answer you, Lunara sends your question and an anonymized summary of your cycle data to publik (publikhq.com). publik sends it to the AI provider that answers (for example Anthropic, Google or OpenAI). It has no name, email or birth date. ' +
         'publik does not store the content of your messages or answers, and does not use it for ads, analytics, training, or sale. It keeps billing records (model, token counts, cost) without content. ' +
         'The AI provider processes your message to answer it, under its own terms.',
     )
