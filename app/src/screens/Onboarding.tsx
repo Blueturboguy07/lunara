@@ -60,6 +60,7 @@ import {
   SECURE_SECRET_KEYS,
   setSecureSecret,
 } from '../native/secureVault'
+import { ArrowIcon } from '../components/ArrowIcon'
 
 type StepId =
   | 'welcome'
@@ -154,7 +155,7 @@ const TRACKING_AREAS: Option[] = [
   { id: 'mood', icon: '◡', label: 'Mood & energy' },
   { id: 'discharge', icon: '◌', label: 'Discharge' },
   { id: 'sleep', icon: '☾', label: 'Sleep' },
-  { id: 'movement', icon: '↗', label: 'Movement' },
+  { id: 'movement', icon: '\u2197\uFE0E', label: 'Movement' },
   { id: 'fertility', icon: '✦', label: 'Fertility signals' },
   { id: 'sexual-wellbeing', icon: '♡', label: 'Sexual wellbeing' },
 ]
@@ -900,7 +901,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
           </div>
           <p className="ob-legal">Educational estimates only—not diagnosis or birth control.</p>
         </div>
-        <button className="cta" onClick={next}>Build my baseline <span aria-hidden="true">→</span></button>
+        <button className="cta" onClick={next}>Build my baseline <ArrowIcon direction="right" /></button>
       </Frame>
     )
   }
@@ -1388,7 +1389,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
           {([
             ['sleepImpact', 'Sleep', '☾'],
             ['skinImpact', 'Skin', '✺'],
-            ['activityImpact', 'Energy', '↗'],
+            ['activityImpact', 'Energy', '\u2197\uFE0E'],
           ] as const).map(([key, label, icon]) => (
             <section key={key}>
               <div><span aria-hidden="true">{icon}</span><strong>{label}</strong></div>
@@ -1479,7 +1480,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
           ))}
         </div>
         <div className="ob-why">
-          <span aria-hidden="true">↗</span>
+          <span aria-hidden="true"><ArrowIcon /></span>
           <p><strong>Permission comes later</strong> Lunara explains the benefit before asking iOS or Android for health access.</p>
         </div>
         <button className="cta" onClick={next}>Continue</button>

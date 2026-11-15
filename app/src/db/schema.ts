@@ -679,6 +679,13 @@ export const SK = {
   publikTelemetryId: 'publikTelemetryId',
   publikUsage: 'publikUsage',
   /**
+   * Prepaid use as a percent before publik sends it (lib/publikApi.ts prepaidLeft): the level
+   * after the last top-up and the last amount seen, as JSON. Never shown as money. Device-bound.
+   */
+  publikPrepaidLevel: 'publikPrepaidLevel',
+  /** The last GET /wallet `ai_providers` list (JSON), for the consent text offline (blind test round 2, M5). */
+  publikAiProviders: 'publikAiProviders',
+  /**
    * Lunara AI: which tracker categories the person allowed to go to which AI
    * provider (lib/healthConsent.ts). Device-bound: a restored backup asks again.
    */

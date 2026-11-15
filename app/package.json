@@ -1,8 +1,8 @@
 {
   "name": "@lunara/app",
   "private": true,
-  "version": "0.2.6",
-  "buildNumber": 6,
+  "version": "0.2.7",
+  "buildNumber": 7,
   "type": "module",
   "scripts": {
     "dev": "vite",

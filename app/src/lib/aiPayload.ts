@@ -10,6 +10,7 @@ import {
 } from '../db/taxonomy'
 import { daysBetween, predict, type ISODate } from '../engine/cycle'
 import { AI_LIMITS } from './aiLimits'
+import { DATE_RULES } from './answerDates'
 import type { ChatMessage } from './assistant'
 import type { AssistantConsent, TrackerSnapshot } from './assistantContext'
 
@@ -40,7 +41,9 @@ Safety rules:
 - Do not tell someone to start, stop, or change prescription medicine.
 - When symptoms could be urgent (including severe or one-sided pain, fainting, chest pain, trouble breathing, very heavy bleeding, pregnancy bleeding with pain, or thoughts of self-harm), clearly recommend prompt professional or emergency help.
 - State when the available information is insufficient.
-- Keep answers focused and readable.`
+- Keep answers focused and readable.
+
+${DATE_RULES}`
 
 declare const aiPayloadBrand: unique symbol
 
@@ -103,7 +106,10 @@ function trackerSummary(tracker: TrackerSnapshot, consent: AssistantConsent): Re
   const { today } = tracker
   const starts = [...tracker.periodStarts].filter((day) => day <= today).sort()
   const when = (day: ISODate) => ({ when: relativeDay(day, today), cycleDay: cycleDayOf(day, starts) })
-  const forecast = predict({ periodStarts: starts, ovulations: [...tracker.ovulations], today }, { baselineCycleLength: tracker.baselineCycleLength })
+  // The forecast that Today and the Calendar show (lib/sharedForecast.ts); predict() only without one.
+  const forecast =
+    tracker.prediction ??
+    predict({ periodStarts: starts, ovulations: [...tracker.ovulations], today }, { baselineCycleLength: tracker.baselineCycleLength })
   const logs = tracker.logs.filter((log) => log.date <= today)
   const summary: Record<string, unknown> = { sharedCategories: categories }
 

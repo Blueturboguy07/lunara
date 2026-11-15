@@ -188,3 +188,48 @@ describe('every provider path sends the payload and nothing else', () => {
     expectAnonymous(JSON.stringify(calls[0].body))
   })
 })
+
+describe('dates in answers (blind test round 2, H1): today is still never sent', () => {
+  it('the system prompt asks for [[day:+N]] placeholders and has no absolute date', () => {
+    const payload = makeAiPayload({ messages: question, consent: everything, tracker })
+    expect(payload.system).toContain('[[day:+18]]')
+    expect(payload.system).toContain('[[range:+13..+23]]')
+    expectAnonymous(JSON.stringify(payload))
+  })
+
+  it('an earlier answer goes back with its placeholders, never with its local dates or its day', () => {
+    const history: ChatMessage[] = [
+      { role: 'user', content: 'When is my next period?' },
+      { role: 'assistant', content: 'Around [[day:+18]].', asOf: '2026-03-10' },
+      { role: 'user', content: 'And the fertile window?' },
+    ]
+    const payload = makeAiPayload({ messages: history, consent: everything, tracker })
+    expect(payload.messages[1]).toEqual({ role: 'assistant', content: 'Around [[day:+18]].' })
+    expectAnonymous(JSON.stringify(payload))
+  })
+})
+
+describe('the AI summary uses the forecast that Today and the Calendar show (round 2, M3)', () => {
+  it('sends the shared forecast as relative days only', () => {
+    const prediction = {
+      nextPeriodStart: addDaysForTest(tracker.today, 28),
+      ovulationDate: addDaysForTest(tracker.today, 14),
+      fertileWindow: { start: addDaysForTest(tracker.today, 9), end: addDaysForTest(tracker.today, 14) },
+      uncertaintyDays: 3,
+      cycleDay: 1,
+      averageCycleLength: 28,
+      source: 'baseline' as const,
+    }
+    const payload = makeAiPayload({ messages: question, consent: everything, tracker: { ...tracker, prediction } })
+    const summary = summaryOf(payload)
+    expect((summary.cycle as Record<string, unknown>).nextPeriod).toBe('in 28 days')
+    expect((summary.fertility as Record<string, unknown>).fertileWindow).toEqual({ from: 'in 9 days', to: 'in 14 days' })
+    expectAnonymous(JSON.stringify(payload))
+  })
+})
+
+function addDaysForTest(day: string, n: number): string {
+  const [y, m, d] = day.split('-').map(Number)
+  const next = new Date(Date.UTC(y, m - 1, d + n))
+  return next.toISOString().slice(0, 10)
+}

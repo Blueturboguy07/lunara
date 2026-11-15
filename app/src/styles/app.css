@@ -4049,7 +4049,7 @@ button.card:active {
 }
 
 .biometric-unlock {
-  min-height: 42px;
+  min-height: 44px;
   margin: -8px auto 0;
   padding: 0 15px;
   display: inline-flex;
@@ -7093,23 +7093,24 @@ button.card:active {
 }
 
 .page.onboarding .ob-appbar-mark {
-  width: 42px;
-  height: 42px;
+  width: 44px;
+  height: 44px;
   justify-self: center;
   pointer-events: none;
 }
 
 .page.onboarding .ob-appbar-spacer {
   width: 44px;
-  height: 42px;
+  height: 44px;
 }
 
 .page.onboarding .back-btn,
 .page.onboarding .ob-skip {
-  width: 42px;
-  min-width: 42px;
-  height: 42px;
-  min-height: 42px;
+  /* 44 px tap targets (blind test round 2, L6). */
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+  min-height: 44px;
   padding: 0;
   display: grid;
   place-items: center;
@@ -8844,4 +8845,27 @@ button.card:active {
   .today-page .phase-hero.enter-previous {
     animation: none;
   }
+}
+
+/*
+ * Blind test round 2, L4: on the first screen of Today, "Log period" sat at the
+ * bottom edge, under the tab bar. On phone heights the hero now gives way, so the
+ * quick actions show in full above the tab bar.
+ */
+@media (max-height: 940px) {
+  .today-page .phase-hero {
+    min-height: 244px;
+    padding-top: 28px;
+  }
+}
+
+@media (max-height: 760px) {
+  .today-page .phase-hero {
+    min-height: 212px;
+    padding-top: 22px;
+  }
+}
+
+.today-quick-actions {
+  scroll-margin-bottom: 24px;
 }

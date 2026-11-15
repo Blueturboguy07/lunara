@@ -6,6 +6,7 @@ import { completedCycles, symptomFrequency } from '../engine/stats'
 import { formatShort } from '../lib/dates'
 import { localToday } from '../lib/dates'
 import { useApp } from '../state/appStore'
+import { ArrowIcon } from '../components/ArrowIcon'
 import '../styles/reports.css'
 
 export function Graphs() {
@@ -72,7 +73,7 @@ export function Graphs() {
           <strong>Create a doctor-ready summary</strong>
           <small>A clear, printable view of what you logged</small>
         </span>
-        <span className="report-arrow" aria-hidden="true">↗</span>
+        <span className="report-arrow" aria-hidden="true"><ArrowIcon /></span>
       </button>
 
       <section className="metric-grid" aria-label="Cycle summary">

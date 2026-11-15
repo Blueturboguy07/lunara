@@ -29,6 +29,7 @@ import { gateMode } from '../lib/buildFlags'
 import { localToday } from '../lib/dates'
 import {
   accountDeletionUrl,
+  activeAiProvider,
   publikPrivacyUrl,
   publikSupportUrl,
   deletePublikDataOnThisPhone,
@@ -91,6 +92,7 @@ import {
 } from '../native/secureVault'
 import { clearWidgetSnapshot, getWidgetStatus, type WidgetStatus } from '../native/widgets'
 import { useApp } from '../state/appStore'
+import { ArrowIcon } from '../components/ArrowIcon'
 
 const DEVICE_TIME_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
 
@@ -230,6 +232,10 @@ export function Settings() {
     }
   }, [])
 
+  // The AI choice that Lunara AI uses now (round 2, L1): read again when the saved provider
+  // or a key changes. Until it is read, the saved provider shows.
+  const [activeProvider, setActiveProvider] = useState<'publik' | 'anthropic' | 'openai' | null>(null)
+
   const s = useLiveQuery(async () => {
     const [
       legacyPregnancyLmp,
@@ -281,6 +287,18 @@ export function Settings() {
   }, [])
 
   useEffect(() => {
+    let alive = true
+    void activeAiProvider()
+      .then((active) => {
+        if (alive) setActiveProvider(active)
+      })
+      .catch(() => undefined)
+    return () => {
+      alive = false
+    }
+  }, [s?.provider, hasPublik, hasAnthropicKey, hasOpenAiKey])
+
+  useEffect(() => {
     if (s?.pregnancyDating?.method) {
       setPregnancyMethod(s.pregnancyDating.method)
     }
@@ -303,6 +321,8 @@ export function Settings() {
   ])
 
   if (!s) return <div className="page" />
+  // The AI row names what Lunara AI uses now (round 2, L1), not only the saved provider.
+  const aiProvider = activeProvider ?? s.provider
   const profileGoals = s.profile.goals
   const hasPregnancyDating = Boolean(s.pregnancyDating)
   const reminderPreferences =
@@ -667,7 +687,7 @@ export function Settings() {
   }
 
   async function removeAiKey() {
-    const provider = s?.provider ?? 'anthropic'
+    const provider = activeProvider ?? s?.provider ?? 'anthropic'
     if (provider === 'publik') return disconnectPublikApi()
     await deleteSecureSecret(
       provider === 'anthropic'
@@ -1147,7 +1167,7 @@ export function Settings() {
                       }
                     />
                   </label>
-                  <span aria-hidden="true">→</span>
+                  <ArrowIcon direction="right" />
                   <label>
                     <span>Until</span>
                     <input
@@ -1234,11 +1254,11 @@ export function Settings() {
           <button className="setting-row" onClick={() => setAssistantOpen(true)}>
             <span>Open Lunara AI</span>
             <span className="muted">
-              {s.provider === 'publik'
+              {aiProvider === 'publik'
                 ? hasPublik
                   ? 'publik API ›'
                   : 'connect publik API ›'
-                : s.provider === 'anthropic'
+                : aiProvider === 'anthropic'
                   ? hasAnthropicKey
                     ? 'Anthropic connected ›'
                     : 'add Anthropic key ›'
@@ -1247,10 +1267,10 @@ export function Settings() {
                     : 'add OpenAI key ›'}
             </span>
           </button>
-          {s.provider === 'publik' && hasPublik && <PlanUseMeter usage={publikUsage} className="microcopy" />}
-          {(s.provider === 'publik' ? hasPublik : s.provider === 'anthropic' ? hasAnthropicKey : hasOpenAiKey) && (
+          {aiProvider === 'publik' && hasPublik && <PlanUseMeter usage={publikUsage} className="microcopy" />}
+          {(aiProvider === 'publik' ? hasPublik : aiProvider === 'anthropic' ? hasAnthropicKey : hasOpenAiKey) && (
             <button className="setting-row" onClick={removeAiKey} disabled={publikBusy}>
-              <span>{s.provider === 'publik' ? 'Disconnect publik API' : 'Remove saved credential'}</span>
+              <span>{aiProvider === 'publik' ? 'Disconnect publik API' : 'Remove saved credential'}</span>
               <span className="muted">›</span>
             </button>
           )}

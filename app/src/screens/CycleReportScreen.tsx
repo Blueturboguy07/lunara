@@ -5,6 +5,7 @@ import { buildCycleReport } from '../engine/patterns'
 import { completedCycles } from '../engine/stats'
 import { formatShort, localToday } from '../lib/dates'
 import { exportCurrentReport } from '../native/reportExport'
+import { ArrowIcon } from '../components/ArrowIcon'
 import '../styles/health.css'
 import '../styles/reports.css'
 
@@ -49,7 +50,7 @@ export function CycleReportScreen({ onBack }: CycleReportScreenProps) {
           onClick={() => void exportReport()}
           aria-label="Export report"
         >
-          ↗
+          <ArrowIcon />
         </button>
       </header>
 

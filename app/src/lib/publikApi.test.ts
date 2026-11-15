@@ -6,6 +6,7 @@ import {
   notLinkedText,
   planLimitText,
   planUseFrom,
+  prepaidLeft,
   publikBaseUrl,
   publikErrorFrom,
   publikLinkButtonLabel,
@@ -64,6 +65,40 @@ function usage(fields: Partial<PublikUsage>): PublikUsage {
   return { ...usageFromBalance(null, 'claimed'), ...fields }
 }
 
+describe('every funded account shows its use as a percent (blind test round 2, M1)', () => {
+  it('prepaid: "N% left", no reset day, also when the week has a reset time', () => {
+    const prepaid = usage({ planKind: 'pack', prepaidLeftPercent: 80, balanceMicros: 4_000_000, weekResetsAt: MONDAY })
+    expect(publikStatusLine(prepaid, NOW)).toBe('80% left')
+    expect(planUseFrom(prepaid)).toEqual({ kind: 'prepaid', usedPercent: null, leftPercent: 80, limitReached: false, resetsAt: null })
+    expect(publikStatusLine(usage({ planKind: 'pack', prepaidLeftPercent: 0, balanceMicros: 0 }), NOW)).toBe('0% left')
+    expect(publikStatusLine(usage({ planKind: 'pack', balanceMicros: 10 }), NOW)).toBe('Prepaid use active')
+    expect(publikStatusLine(usage({ planKind: 'pack', prepaidLeftPercent: 80, weekResetsAt: MONDAY }), NOW)).not.toMatch(/reset/)
+  })
+
+  it('plan: "N% of your plan used · resets <day>", also when prepaid use is there too', () => {
+    expect(publikStatusLine(usage({ planKind: 'plan', usedPercent: 12, resetsAt: MONDAY, prepaidLeftPercent: 50 }), NOW)).toBe(
+      '12% of your plan used · resets Monday',
+    )
+  })
+
+  it('free use for linking the account: "N% of your free use left"', () => {
+    expect(publikStatusLine(usage({ planKind: 'none', starterRemainingMicros: 30_000 }), NOW)).toBe('60% of your free use left')
+    expect(publikStatusLine(usage({ planKind: 'none', balanceMicros: 0 }), NOW)).toBe('No publik plan yet')
+  })
+
+  it('prepaidLeft: a battery from the level after the last top-up, kept on this phone', () => {
+    expect(prepaidLeft(null, null)).toEqual({ percent: null, memory: null })
+    const first = prepaidLeft(5_000_000, null)
+    expect(first).toEqual({ percent: 100, memory: { level: 5_000_000, last: 5_000_000 } })
+    const used = prepaidLeft(4_000_000, first.memory)
+    expect(used).toEqual({ percent: 80, memory: { level: 5_000_000, last: 4_000_000 } })
+    // A top-up starts a new level.
+    expect(prepaidLeft(9_000_000, used.memory)).toEqual({ percent: 100, memory: { level: 9_000_000, last: 9_000_000 } })
+    expect(prepaidLeft(1, used.memory).percent).toBe(1)
+    expect(prepaidLeft(0, used.memory)).toEqual({ percent: 0, memory: { level: 5_000_000, last: 0 } })
+  })
+})
+
 describe('AI use is a percent of the plan limit, never money (founder rule, Nov 14 2026)', () => {
   it('publik’s own used_percent first, then remaining_percent, then the used and limit values of the week', () => {
     expect(planUseFrom(usage({ usedPercent: 62, remainingPercent: 10, weekUsedMicros: 1, weekBudgetMicros: 2 }))?.usedPercent).toBe(62)
@@ -90,7 +125,9 @@ describe('AI use is a percent of the plan limit, never money (founder rule, Nov 
     expect(publikStatusLine(null)).toBe('Ready')
     expect(publikStatusLine(usage({ balanceMicros: 3_120_000 }), NOW)).toBe('Plan active')
     expect(publikStatusLine(usage({ balanceMicros: 0 }), NOW)).toBe('Plan limit reached')
-    expect(publikStatusLine(usage({ balanceMicros: 0, weekResetsAt: MONDAY }), NOW)).toBe('Plan limit reached · resets Monday')
+    // Without plan.kind publik may be telling about prepaid use, which never resets: no reset day (round 2, M1).
+    expect(publikStatusLine(usage({ balanceMicros: 0, weekResetsAt: MONDAY }), NOW)).toBe('Plan limit reached')
+    expect(publikStatusLine(usage({ planKind: 'plan', balanceMicros: 0, weekResetsAt: MONDAY }), NOW)).toBe('Plan limit reached · resets Monday')
     expect(publikStatusLine(usageFromBalance(0, 'anonymous'), NOW)).toBe('Not linked to a publik plan yet')
     for (const line of [publikStatusLine(usage({ balanceMicros: 3_120_000 }), NOW), publikStatusLine(usage({ balanceMicros: 0 }), NOW)]) {
       expect(line).not.toMatch(/\d/)
@@ -275,6 +312,8 @@ describe('publik usage headers (CONTRACT §1, §11.6)', () => {
       usedPercent: null,
       remainingPercent: null,
       resetsAt: null,
+      planKind: null,
+      prepaidLeftPercent: null,
     })
   })
 

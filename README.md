@@ -98,8 +98,11 @@ try it. The app never shows an amount of money for AI use.
 It shows only the share of the plan limit you used, with a bar, for example
 "62% of your plan used · resets Monday" (from `used_percent`,
 `remaining_percent` and `resets_at` of `GET /api/v1/wallet`, else from the
-week's used and limit values). When publik gives no limit, it shows "Plan
-active" or "Plan limit reached" with no number. When the limit is reached, AI
+week's used and limit values). Prepaid use has no reset day: it shows "80%
+left" with a bar (from `prepaid_remaining_percent` when publik sends it; until
+then Lunara counts the share on the phone against the prepaid amount after the
+last top-up). The free use shows "60% of your free use left". When publik gives
+no number, it shows "Plan active" or "Plan limit reached". When the limit is reached, AI
 chat says so in plain words, says when the plan resets, and offers "Use my own
 key" (`app/src/lib/publikApi.ts`; `app/src/lib/noMoneyShown.test.ts` fails when
 an app file has "$" followed by a digit). AI chat is optional and asks before it sends
@@ -239,7 +242,9 @@ itself when the sign-in is done. While Lunara is in the foreground it checks the
 back. Then onboarding asks your age. After that, an adult picks **Get a plan**,
 **Connect your plan** or **Use my own key** (a person under 18 never sees this
 screen); "Use my own key" keeps the Anthropic / OpenAI paths above exactly as
-they were. You can change the choice later in Settings → publik.
+they were. "Use my own AI key" opens the key entry in Lunara AI at once and
+changes no setting until you save a key. You can change the choice later in
+Settings → publik.
 
 **Purchase links follow the App Store storefront** (`app/src/lib/storefront.ts`).
 The iOS app reads the storefront country from StoreKit (`appStoreStorefront` in
@@ -314,10 +319,11 @@ fails when they differ.
   publik's in-app deletion page (`https://publikhq.com/in-app/delete-account`)
   in the in-app browser. Settings → publik → Sign out signs this phone out and
   keeps your data. Settings → publik → Help and support opens
-  `https://publikhq.com/in-app/support?app=lunara` in the in-app browser.
-  Under each AI answer, "Report this answer" lets you pick a reason, then opens
-  the same support page with only the app name and that reason. It sends no
-  chat text and no health data. Settings → publik → publik privacy policy opens
+  `https://publikhq.com/in-app/support?app=lunara&app_name=publik+Lunara` in
+  the in-app browser. Under each AI answer, "Report this answer" opens a card
+  above the message box. You pick a reason, then Lunara opens the same support
+  page with only the app name and that reason (`reason`, `reason_label`). It
+  sends no chat text and no health data. Settings → publik → publik privacy policy opens
   `https://publikhq.com/in-app/privacy` in the in-app browser. The in-app
   browser opens only these in-app pages; the US-storefront "Get a plan" and
   top-up links open the normal publik site.
@@ -327,8 +333,9 @@ fails when they differ.
   Lunara shows the screen "AI chat is optional". On publik API it says: "To
   answer you, Lunara sends your question and an anonymized summary of your
   cycle data to publik (publikhq.com). publik sends it to the AI provider that
-  answers: <the companies that publik names, or no names when publik sends no
-  list>. It has no name, email or birth date. publik does not store the content of your messages or answers, and does not use it
+  answers: <the companies that publik names; offline, the last list that the
+  phone kept>." If the phone never got the list, AI chat on publik API waits
+  for the internet ("Connect to the internet to turn on AI chat"). It has no name, email or birth date. publik does not store the content of your messages or answers, and does not use it
   for ads, analytics, training, or sale. It keeps billing records (model, token
   counts, cost) without content. The AI provider processes your message to
   answer it, under its own terms." With your own key (Anthropic, OpenAI, or an
@@ -343,7 +350,12 @@ fails when they differ.
   One function, `app/src/lib/aiPayload.ts` (`makeAiPayload`), makes every AI
   request, for publik API and for your own key. It sends no name, email, birth
   date, location, device or account ID, and no notes. Days are relative to
-  today ("cycle day 14", "3 days ago"); no calendar date is sent. Symptoms,
+  today ("cycle day 14", "3 days ago"); no calendar date is sent. So the AI
+  does not know today's date: it writes `[[day:+18]]` or `[[range:+13..+23]]`,
+  and the phone shows your local dates ("Dec 3", "Nov 28 – Dec 8")
+  (`app/src/lib/answerDates.ts`). A date that the AI guesses is left out, with
+  a note. The next period and the fertile window in the summary come from the
+  same forecast as Today and the Calendar (`app/src/lib/sharedForecast.ts`). Symptoms,
   moods and events go only when they are values from Lunara's own lists. The
   publik install key goes in the Authorization header, for billing only. Unit
   tests fail when a name, an email, a birth date or a calendar date reaches the

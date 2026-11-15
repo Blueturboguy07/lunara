@@ -62,7 +62,16 @@ export interface PublikUsage {
   usedPercent: number | null
   remainingPercent: number | null
   resetsAt: string | null
+  /** GET /api/v1/wallet `plan.kind`: a plan ("plan"), prepaid use only ("pack"), or neither ("none"); null when unknown. */
+  planKind: PublikPlanKind | null
+  /**
+   * Prepaid use (packs and grant money) left, 0 to 100: `prepaid_remaining_percent` when publik
+   * sends it, else prepaidLeft() on this phone. Null when there is no prepaid use. Prepaid use never resets.
+   */
+  prepaidLeftPercent: number | null
 }
+
+export type PublikPlanKind = 'plan' | 'pack' | 'none'
 
 export type PublikErrorKind = 'needs_credit' | 'disconnected' | 'rate_limited' | 'unreachable' | 'rejected'
 
@@ -117,11 +126,21 @@ export function withoutMoney(text: string | null | undefined): string | null {
   return value && !namesMoney(value) ? value : null
 }
 
-/** AI use as a share of the publik plan limit. */
+/**
+ * AI use as a share, never as money (blind test round 2, M1):
+ *   plan     "62% of your plan used · resets Monday" (a bar of the share used)
+ *   prepaid  "80% left" (a bar of the share left; prepaid use has no reset day)
+ *   free     "60% of your free use left" (the free use for linking the account)
+ *   none     no plan, no prepaid use, no free use left
+ */
 export interface PlanUse {
-  /** Whole percent of the plan limit used (0 to 100), or null when publik gave no limit to compare with. */
+  kind: 'plan' | 'prepaid' | 'free' | 'none' | 'unknown'
+  /** Whole percent of the plan limit used (0 to 100); plan only, null when publik gave no limit. */
   usedPercent: number | null
+  /** Whole percent left (0 to 100); prepaid and free use only. */
+  leftPercent: number | null
   limitReached: boolean
+  /** When the plan limit resets; null for prepaid and free use, which never reset. */
   resetsAt: string | null
 }
 
@@ -140,15 +159,54 @@ export function planUseFrom(usage: PublikUsage | null): PlanUse | null {
   const weekLimit = finite(usage.weekBudgetMicros)
   const raw =
     used !== null ? used : remaining !== null ? 100 - remaining : weekUsed !== null && weekLimit !== null && weekLimit > 0 ? (weekUsed / weekLimit) * 100 : null
-  const resetsAt = usage.resetsAt ?? usage.weekResetsAt
-  if (raw === null) {
-    const balance = finite(usage.balanceMicros)
-    return { usedPercent: null, limitReached: balance !== null && balance <= 0, resetsAt }
+  const balance = finite(usage.balanceMicros)
+  const kind = usage.planKind
+  if (raw !== null && kind !== 'pack' && kind !== 'none') {
+    const limitReached = raw >= 100
+    // Floor: the line says 100% only when the limit is really reached.
+    const percent = Math.min(limitReached ? 100 : 99, Math.max(0, Math.floor(raw)))
+    return { kind: 'plan', usedPercent: percent, leftPercent: null, limitReached, resetsAt: usage.resetsAt ?? usage.weekResetsAt }
   }
-  const limitReached = raw >= 100
-  // Floor: the line says 100% only when the limit is really reached.
-  const percent = Math.min(limitReached ? 100 : 99, Math.max(0, Math.floor(raw)))
-  return { usedPercent: percent, limitReached, resetsAt }
+  if (kind === 'plan') {
+    return { kind: 'plan', usedPercent: null, leftPercent: null, limitReached: balance !== null && balance <= 0, resetsAt: usage.resetsAt ?? usage.weekResetsAt }
+  }
+  const prepaid = finite(usage.prepaidLeftPercent)
+  if (prepaid !== null || kind === 'pack') {
+    const left = prepaid === null ? null : Math.round(Math.min(100, Math.max(0, prepaid)))
+    return { kind: 'prepaid', usedPercent: null, leftPercent: left, limitReached: left === 0 || (left === null && balance !== null && balance <= 0), resetsAt: null }
+  }
+  const starter = finite(usage.starterRemainingMicros)
+  if (starter !== null && starter > 0) {
+    return { kind: 'free', usedPercent: null, leftPercent: leftShare(starter, PUBLIK_LINK_STARTER_MICROS), limitReached: false, resetsAt: null }
+  }
+  if (kind === 'none') return { kind: 'none', usedPercent: null, leftPercent: null, limitReached: balance === null || balance <= 0, resetsAt: null }
+  // An older publik without plan.kind: no reset day without a share to go with it.
+  return { kind: 'unknown', usedPercent: null, leftPercent: null, limitReached: balance !== null && balance <= 0, resetsAt: null }
+}
+
+/** Whole percent of `level` that `left` is, 0 to 100; at least 1 while anything is left. */
+function leftShare(left: number, level: number): number {
+  if (left <= 0) return 0
+  const share = (left / Math.max(level, left)) * 100
+  return Math.max(1, Math.min(100, Math.floor(share)))
+}
+
+/**
+ * Prepaid use left as a percent until publik sends `prepaid_remaining_percent`: the prepaid
+ * use now against its level right after the last top-up, like a battery (publik's own rule,
+ * migration 0113). This phone keeps the level: it is the highest prepaid amount seen since
+ * the amount last went up. The first reading on a phone is 100%. Never shown as money.
+ */
+export function prepaidLeft(
+  prepaidMicros: number | null,
+  previous: { level: number; last: number } | null,
+): { percent: number | null; memory: { level: number; last: number } | null } {
+  if (prepaidMicros === null || !Number.isFinite(prepaidMicros)) return { percent: null, memory: previous }
+  const now = Math.max(0, prepaidMicros)
+  if (now <= 0) return { percent: previous ? 0 : null, memory: previous ? { level: previous.level, last: 0 } : null }
+  // A top-up (the amount went up since the last reading) starts a new level.
+  const level = !previous || now > previous.last ? now : Math.max(previous.level, now)
+  return { percent: leftShare(now, level), memory: { level, last: now } }
 }
 
 const DAY_MS = 86_400_000
@@ -194,6 +252,8 @@ export function usageFromBalance(balanceMicros: number | null, claimState: Publi
     usedPercent: null,
     remainingPercent: null,
     resetsAt: null,
+    planKind: null,
+    prepaidLeftPercent: null,
   }
 }
 
@@ -304,6 +364,8 @@ export function readPublikUsage(headers: Headers): PublikUsage {
     usedPercent: null,
     remainingPercent: null,
     resetsAt: null,
+    planKind: null,
+    prepaidLeftPercent: null,
   }
 }
 
@@ -400,12 +462,24 @@ export function publikUnreachable(): PublikApiError {
 export function publikStatusLine(usage: PublikUsage | null, now: Date = new Date()): string {
   const use = planUseFrom(usage)
   if (!use) return 'Ready'
-  const when = resetsLabel(use.resetsAt, now)
-  const tail = when ? ` · resets ${when}` : ''
-  if (use.usedPercent === null && usage?.claimState === 'anonymous') return 'Not linked to a publik plan yet'
-  if (use.limitReached) return `Plan limit reached${tail}`
-  if (use.usedPercent !== null) return `${use.usedPercent}% of your plan used${tail}`
-  return `Plan active${tail}`
+  if (use.kind !== 'plan' && use.leftPercent === null && usage?.claimState === 'anonymous') return 'Not linked to a publik plan yet'
+  switch (use.kind) {
+    case 'plan': {
+      const when = resetsLabel(use.resetsAt, now)
+      const tail = when ? ` · resets ${when}` : ''
+      if (use.limitReached) return `Plan limit reached${tail}`
+      return use.usedPercent !== null ? `${use.usedPercent}% of your plan used${tail}` : `Plan active${tail}`
+    }
+    case 'prepaid':
+      // Prepaid use never resets: no reset day.
+      return use.leftPercent !== null ? `${use.leftPercent}% left` : use.limitReached ? 'No prepaid use left' : 'Prepaid use active'
+    case 'free':
+      return `${use.leftPercent}% of your free use left`
+    case 'none':
+      return 'No publik plan yet'
+    default:
+      return use.limitReached ? 'Plan limit reached' : 'Plan active'
+  }
 }
 
 /**

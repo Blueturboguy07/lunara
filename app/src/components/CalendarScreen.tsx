@@ -1,15 +1,9 @@
 import { useLiveQuery } from 'dexie-react-hooks'
 import { useState } from 'react'
-import {
-  clearHealthImportProvenance,
-  db,
-  getOvulations,
-  getPeriodStarts,
-  getSetting,
-  SK,
-} from '../db/schema'
-import { addDays, predict, toEpochDay, type Prediction } from '../engine/cycle'
+import { clearHealthImportProvenance, db } from '../db/schema'
+import { addDays, type Prediction } from '../engine/cycle'
 import { localToday, monthLabel } from '../lib/dates'
+import { forecastDayKind, forecastOn, readForecastSource } from '../lib/sharedForecast'
 import { useApp } from '../state/appStore'
 
 const DOW = ['M', 'T', 'W', 'T', 'F', 'S', 'S']
@@ -26,21 +20,9 @@ function dayClass(
   avgPeriodDays: number,
 ): string {
   const cls: string[] = ['cal-day']
-  if (logged.has(date)) cls.push('period')
-  else if (prediction?.nextPeriodStart) {
-    const e = toEpochDay(date)
-    const start = toEpochDay(prediction.nextPeriodStart)
-    if (e >= start && e < start + avgPeriodDays) cls.push('predicted')
-  }
-  if (!cls.includes('period') && !cls.includes('predicted') && prediction?.fertileWindow) {
-    const e = toEpochDay(date)
-    if (prediction.ovulationDate === date) cls.push('ovulation')
-    else if (
-      e >= toEpochDay(prediction.fertileWindow.start) &&
-      e <= toEpochDay(prediction.fertileWindow.end)
-    )
-      cls.push('fertile')
-  }
+  // A logged period day wins; otherwise the mark comes from the shared forecast (lib/sharedForecast.ts).
+  const kind = logged.has(date) ? 'period' : forecastDayKind(prediction, date, avgPeriodDays)
+  if (kind) cls.push(kind)
   if (date === today) cls.push('today-mark')
   return cls.join(' ')
 }
@@ -53,18 +35,14 @@ export function CalendarScreen() {
   const [viewMode, setViewMode] = useState<'month' | 'year'>('month')
   const [editingPeriods, setEditingPeriods] = useState(false)
 
+  // The same forecast and cache as Today (blind test round 2, M3): a changed log runs this again.
   const data = useLiveQuery(async () => {
-    const [periodStarts, ovulations, flowLogs, cycleLength] = await Promise.all([
-      getPeriodStarts(),
-      getOvulations(),
+    const [source, flowLogs] = await Promise.all([
+      readForecastSource(),
       db.dailyLogs.filter((l) => l.flow !== undefined).primaryKeys(),
-      getSetting(SK.cycleLength),
     ])
     return {
-      prediction: predict(
-        { periodStarts, ovulations, today },
-        { baselineCycleLength: Number(cycleLength) || undefined },
-      ),
+      prediction: forecastOn(source, today).prediction,
       logged: new Set(flowLogs),
     }
   }, [today])

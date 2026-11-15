@@ -23,6 +23,12 @@ import {
 export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
+  /**
+   * An answer only: the local day it arrived, so its [[day:+N]] placeholders show the
+   * same dates later (lib/answerDates.ts). It stays on the phone: makeAiPayload sends
+   * only role and content.
+   */
+  asOf?: string
 }
 
 /**

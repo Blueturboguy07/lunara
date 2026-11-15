@@ -641,17 +641,36 @@
   background: none;
 }
 
+/*
+ * "Report this answer": the reason card is a layer above the chat and the message box
+ * (blind test round 2, M4). The message box is hidden while the card is open, so the
+ * card sits at the bottom of the screen, fully visible, above the home indicator.
+ */
+.assistant-overlay .chat-report-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 16px 16px max(16px, calc(var(--safe-bottom) + 12px));
+  background: rgba(40, 24, 28, 0.32);
+}
+
 .assistant-overlay .chat-report {
-  width: min(86%, 430px);
-  padding: 10px 12px 4px;
+  width: min(100%, 460px);
+  max-height: calc(100% - 32px);
+  overflow-y: auto;
+  padding: 14px 16px 6px;
   display: grid;
-  gap: 8px;
+  gap: 10px;
   color: var(--ink-650);
-  font-size: 11px;
+  font-size: 13px;
   line-height: 1.45;
   background: var(--paper-50);
   border: 1px solid var(--line-soft);
-  border-radius: 14px;
+  border-radius: 18px;
+  box-shadow: 0 18px 44px rgba(75, 45, 50, 0.18);
 }
 
 .assistant-overlay .chat-report p {
@@ -666,9 +685,9 @@
 
 .assistant-overlay .chat-report-reasons button {
   min-height: 44px;
-  padding: 7px 11px;
+  padding: 7px 13px;
   color: var(--ink-800);
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 650;
   background: var(--surface-raised);
   border: 1px solid var(--line-medium);
@@ -787,7 +806,7 @@
   margin: 0 auto;
   padding: 4px 4px 4px 13px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 42px;
+  grid-template-columns: minmax(0, 1fr) 44px;
   align-items: end;
   gap: 7px;
   background: rgba(255, 254, 251, 0.96);

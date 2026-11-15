@@ -8,6 +8,7 @@ import {
   type ISODate,
   type Prediction,
 } from './cycle'
+import { formatRange } from '../lib/dates'
 
 export type FertilityBand = 'unknown' | 'lower-estimate' | 'possible' | 'higher'
 
@@ -154,7 +155,7 @@ export function pregnancyTestPlan(
 
   if (suggestedDate && toEpochDay(today) < toEpochDay(suggestedDate)) {
     status = 'wait'
-    message = `Testing now may be too early for this estimate. The expected-period marker is ${suggestedDate}. Follow your test's instructions if they differ.`
+    message = `Testing now may be too early for this estimate. The expected-period marker is ${formatRange(suggestedDate, suggestedDate, today)}. Follow your test's instructions if they differ.`
   } else {
     status = 'test-window'
     message =

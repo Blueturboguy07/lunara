@@ -5,16 +5,12 @@ import { LunaraMark } from '../components/LunaraMark'
 import { PREGNANCY_WEEKS } from '../content/pregnancyWeeks'
 import {
   db,
-  getHealthProfile,
   getSetting,
-  getOvulations,
-  getPeriodStarts,
   SK,
   type DailyLog,
   type Goal,
 } from '../db/schema'
 import { addDays, daysBetween } from '../engine/cycle'
-import { buildCycleForecast } from '../engine/cycleForecast'
 import {
   analyzePatterns,
   type CyclePhase,
@@ -27,14 +23,13 @@ import {
   type PregnancyDatingMethod,
   type PregnancyDatingResult,
 } from '../engine/pregnancyDating'
-import {
-  applyPredictionContext,
-  periodTimingStatus,
-} from '../engine/predictionContext'
-import { localToday } from '../lib/dates'
+import { periodTimingStatus } from '../engine/predictionContext'
+import { formatRange, localToday } from '../lib/dates'
+import { forecastOn, readForecastSource } from '../lib/sharedForecast'
 import { useHorizontalDrag } from '../lib/useHorizontalDrag'
 import { publishWidgetSnapshot, type CycleWidgetSnapshot } from '../native/widgets'
 import { useApp, type TrackerFocus } from '../state/appStore'
+import { ArrowIcon } from '../components/ArrowIcon'
 
 interface DailyInsight {
   key: string
@@ -245,11 +240,9 @@ export function Today() {
   })
 
   const data = useLiveQuery(async () => {
-    const [periodStarts, ovulations, profile, legacyPregnancyLmp, historyLogs, selectedLog] =
+    const [source, legacyPregnancyLmp, historyLogs, selectedLog] =
       await Promise.all([
-        getPeriodStarts(),
-        getOvulations(),
-        getHealthProfile(),
+        readForecastSource(),
         getSetting(SK.pregnancyLMP),
         db.dailyLogs
           .where('date')
@@ -257,33 +250,14 @@ export function Today() {
           .toArray(),
         db.dailyLogs.get(selectedDate),
       ])
-    const forecastPeriodStarts = periodStarts.filter((date) => date <= selectedDate)
-    const forecastOvulations = ovulations.filter((date) => date <= selectedDate)
+    const { profile } = source
+    const forecastPeriodStarts = source.periodStarts.filter((date) => date <= selectedDate)
     const recentLogs = historyLogs.filter(
       (log) => log.date >= addDays(selectedDate, -27),
     )
-    const forecast = buildCycleForecast(
-      {
-        periodStarts: forecastPeriodStarts,
-        ovulations: forecastOvulations,
-        today: selectedDate,
-      },
-      {
-        baselineCycleLength: profile.cycle.typicalCycleLength,
-        positiveOpkDates: recentLogs
-          .filter((log) => log.opk === 'positive' && log.date <= selectedDate)
-          .map((log) => log.date),
-        bbtShiftDates: forecastOvulations,
-      },
-    )
-    const rawPrediction = forecast.prediction
-    const personalized = applyPredictionContext(rawPrediction, profile, {
-      completedCycles: forecast.diagnostics.completedCycleCount,
-      bbtShiftEstimateCount: forecastOvulations.length,
-      positiveOpkThisCycle: forecast.diagnostics.evidence.some(
-        (item) => item.kind === 'opk-suggestive',
-      ),
-    })
+    // The same forecast and cache as the Calendar (lib/sharedForecast.ts, blind test round 2, M3).
+    const forecast = forecastOn(source, selectedDate)
+    const personalized = forecast.predictionContext
     const pregnancyLmp = profile.reproductive.pregnancyLmp ?? legacyPregnancyLmp
     const pregnancyDating =
       (profile.reproductive.pregnancyDating
@@ -363,7 +337,7 @@ export function Today() {
         detail: ovulationToday
           ? `Calendar estimate · about ±${data.prediction.uncertaintyDays} days`
           : nextPeriodDate
-            ? `Next period estimate · ${nextPeriodDate}`
+            ? `Next period estimate · ${formatRange(nextPeriodDate, nextPeriodDate, today)}`
             : 'Log a period date to update your private summary.',
         cycleDay: cycleDay ?? undefined,
         phase: inPeriod
@@ -435,7 +409,7 @@ export function Today() {
               className="phase-detail-link"
               onClick={() => setPregnancyDetailOpen(true)}
             >
-              Due {pregnancy.estimatedDueDate}
+              Due {formatRange(pregnancy.estimatedDueDate, pregnancy.estimatedDueDate, today)}
               <span aria-hidden="true">›</span>
             </button>
           </section>
@@ -550,7 +524,7 @@ export function Today() {
           <button className="card phase-reading-card" onClick={() => setPregnancyDetailOpen(true)}>
             <div className="section-label">What to expect at {pregnancy.week} weeks</div>
             <p>{PREGNANCY_WEEKS[pregnancy.week] ?? 'Growing steadily, one quiet day at a time.'}</p>
-            <span>Open the week guide <b aria-hidden="true">↗</b></span>
+            <span>Open the week guide <b aria-hidden="true"><ArrowIcon /></b></span>
           </button>
         )}
         <Disclaimer />
@@ -853,8 +827,8 @@ export function Today() {
           <em>{data.predictionContext.reasons[0]?.message}</em>
           {data.forecastDiagnostics.periodWindow && (
             <span className="prediction-basis-window">
-              Current estimated range {data.forecastDiagnostics.periodWindow.start}–
-              {data.forecastDiagnostics.periodWindow.end}
+              Current estimated range{' '}
+              {formatRange(data.forecastDiagnostics.periodWindow.start, data.forecastDiagnostics.periodWindow.end, today)}
             </span>
           )}
         </span>
@@ -909,7 +883,7 @@ export function Today() {
               ? 'Track changes month to month without turning a pattern into a diagnosis.'
               : 'Learn what may be changing — and what can vary from person to person.'}
         </p>
-        <span>Explore the guide <b aria-hidden="true">↗</b></span>
+        <span>Explore the guide <b aria-hidden="true"><ArrowIcon /></b></span>
       </button>
 
       <Disclaimer />

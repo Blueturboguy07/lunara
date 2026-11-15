@@ -60,6 +60,7 @@ import {
   secureVaultStatus,
   setSecureSecret,
 } from '../native/secureVault'
+import { APP_NAME } from './appName'
 import { testHooksOn } from './buildFlags'
 import { forgetChatAgreement } from './healthConsent'
 import { providerFetch } from './providerFetch'
@@ -68,6 +69,7 @@ import {
   aiProvidersFrom,
   DEFAULT_PUBLIK_ENDPOINT,
   isAdultBirthYear,
+  prepaidLeft,
   PublikApiError,
   publikBaseUrl,
   publikErrorFrom,
@@ -77,6 +79,7 @@ import {
   withoutMoney,
   type PublikClaimState,
   type PublikEndpoint,
+  type PublikPlanKind,
   type PublikUsage,
 } from './publikApi'
 import { PUBLIK_BUILD, publikBuildAvailable } from './publikBuild'
@@ -88,7 +91,7 @@ type FetchLike = typeof fetch
 
 export const APP_SLUG = "lunara"
 /** Mirrors app/package.json `version` and PUBLIK_BUILD.appVersion; publikBuild.test.ts pins all three equal. */
-export const APP_VERSION = "0.2.6"
+export const APP_VERSION = "0.2.7"
 /** Lunara AI (adults only) calls a model, so the gate asks how to pay for it. */
 export const USES_AI = true
 const PUBLIK_ORIGIN = 'https://publikhq.com'
@@ -401,22 +404,20 @@ async function forgetInstall(): Promise<void> {
 }
 
 /**
- * Lunara keeps its AI provider in SK.aiProvider. The plan screen's answer
- * sets it, so Lunara AI follows the gate: "Connect your plan" selects publik
- * API; "Use my own key" selects the person's own provider (Anthropic unless
- * one is already chosen). Own keys in the vault are never touched.
+ * Lunara keeps its AI provider in SK.aiProvider. "Use my publik plan" on the
+ * plan screen selects publik API. "Use my own AI key" changes nothing here:
+ * Lunara AI opens on the key entry (components/PublikGate.tsx), and the
+ * provider changes only when the person saves a key (blind test round 2, M2).
+ * Own keys in the vault are never touched.
  */
 export async function applyChoiceToAi(choice: Choice): Promise<void> {
+  if (choice !== 'publik') return
   const current = await getSetting(SK.aiProvider)
-  if (choice === 'publik') {
-    await Promise.all([
-      setSetting(SK.aiProvider, 'publik'),
-      current === 'publik' ? Promise.resolve() : removeSetting(SK.aiModel),
-      setSetting(SK.aiBaseUrl, ''),
-    ])
-  } else if (!current || current === 'publik') {
-    await Promise.all([setSetting(SK.aiProvider, 'anthropic'), removeSetting(SK.aiModel), removeSetting(SK.aiBaseUrl)])
-  }
+  await Promise.all([
+    setSetting(SK.aiProvider, 'publik'),
+    current === 'publik' ? Promise.resolve() : removeSetting(SK.aiModel),
+    setSetting(SK.aiBaseUrl, ''),
+  ])
 }
 
 /**
@@ -428,6 +429,20 @@ export async function resolveProvider(userKey?: { baseURL: string; apiKey: strin
   const c = await readCredential()
   if (c?.choice === 'publik' && (await publikAvailable())) return { kind: 'publik', baseURL: c.base_url, apiKey: c.key }
   return userKey?.apiKey ? { kind: 'own', ...userKey } : { kind: 'needs_own_key' }
+}
+
+/**
+ * The AI choice that Lunara AI uses now: one rule for the AI screen and the
+ * Settings row (blind test round 2, L1: the row said "add Anthropic key" while
+ * publik API was in use). A saved provider wins; with none saved, the plan-screen
+ * answer decides, and a build that offers publik API preselects it.
+ */
+export async function activeAiProvider(): Promise<'publik' | 'anthropic' | 'openai'> {
+  const [saved, available] = await Promise.all([getSetting(SK.aiProvider), publikAvailable()])
+  if (saved === 'openai' || saved === 'anthropic') return saved
+  if (saved === 'publik') return available ? 'publik' : 'anthropic'
+  if ((await resolveProvider(null)).kind === 'publik') return 'publik'
+  return available && (await getSetting(SK.publikChoice)) !== 'own_key' ? 'publik' : 'anthropic'
 }
 
 // ---------- POST /api/v1/installs ----------
@@ -688,6 +703,26 @@ export interface PublikWallet extends PublikUsage {
   topUpUrl: string | null
 }
 
+async function readPrepaidMemory(): Promise<{ level: number; last: number } | null> {
+  try {
+    const raw = await getSetting(SK.publikPrepaidLevel)
+    const value = raw ? (JSON.parse(raw) as { level?: unknown; last?: unknown }) : null
+    return value && typeof value.level === 'number' && typeof value.last === 'number' ? { level: value.level, last: value.last } : null
+  } catch {
+    return null
+  }
+}
+
+/** The last `ai_providers` list GET /wallet sent, kept on this phone; null when it never sent one. */
+export async function cachedAiProviders(): Promise<string[] | null> {
+  try {
+    const raw = await getSetting(SK.publikAiProviders)
+    return raw ? aiProvidersFrom(JSON.parse(raw)) : null
+  } catch {
+    return null
+  }
+}
+
 const percentOrNull = (value: unknown): number | null => (typeof value === 'number' && Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : null)
 
 /** GET /api/v1/wallet for Lunara AI's plan-use line, on the base_url POST /installs announced. */
@@ -718,6 +753,8 @@ export async function fetchPublikWallet(fetchImpl: FetchLike = providerFetch): P
     remaining_percent?: number | null
     resets_at?: string | null
     ai_providers?: unknown
+    plan?: { kind?: unknown } | null
+    prepaid_remaining_percent?: number | null
   }
   const claimState: PublikClaimState | null =
     data.claim_state === 'claimed' || data.claim_state === 'anonymous' ? data.claim_state : null
@@ -731,6 +768,22 @@ export async function fetchPublikWallet(fetchImpl: FetchLike = providerFetch): P
     baseUrl ? setSetting(SK.publikBaseUrl, baseUrl) : Promise.resolve(),
   ]).catch(() => undefined) // a failed write never hides publik's answer; the next read writes it again
   const balance = data.balance_micros ?? data.available_micros ?? null
+  const kind = data.plan?.kind
+  const planKind: PublikPlanKind | null = kind === 'plan' || kind === 'pack' || kind === 'none' ? kind : null
+  const starter = data.starter?.remaining_micros ?? 0
+  // Prepaid use (packs and grant money) as a percent: publik's number when it sends one, else
+  // the level this phone keeps (prepaidLeft). Never an amount of money on a screen.
+  let prepaidLeftPercent = percentOrNull(data.prepaid_remaining_percent)
+  if (prepaidLeftPercent === null && claimState === 'claimed' && typeof balance === 'number') {
+    const previous = await readPrepaidMemory()
+    const prepaid = prepaidLeft(Math.max(0, balance - starter), previous)
+    prepaidLeftPercent = prepaid.percent
+    if (prepaid.memory && JSON.stringify(prepaid.memory) !== JSON.stringify(previous)) {
+      await setSetting(SK.publikPrepaidLevel, JSON.stringify(prepaid.memory)).catch(() => undefined)
+    }
+  }
+  const aiProviders = aiProvidersFrom(data.ai_providers)
+  if (aiProviders) await setSetting(SK.publikAiProviders, JSON.stringify(aiProviders)).catch(() => undefined)
   return {
     balanceMicros: balance,
     weekUsedMicros: data.week?.used_micros ?? null,
@@ -743,7 +796,9 @@ export async function fetchPublikWallet(fetchImpl: FetchLike = providerFetch): P
     usedPercent: percentOrNull(data.used_percent),
     remainingPercent: percentOrNull(data.remaining_percent),
     resetsAt: typeof data.resets_at === 'string' && data.resets_at ? data.resets_at : null,
-    aiProviders: aiProvidersFrom(data.ai_providers),
+    planKind,
+    prepaidLeftPercent,
+    aiProviders,
     claimUrl,
     topUpUrl: trustedUrl(data.top_up_url) ?? claimUrl,
   }
@@ -773,6 +828,8 @@ function publikSettingKeys(): string[] {
     SK.publikCostSentence,
     SK.publikCardSeen,
     SK.publikChoice,
+    SK.publikPrepaidLevel,
+    SK.publikAiProviders,
   ]
 }
 
@@ -1098,15 +1155,19 @@ export const REPORT_ANSWER_NOTE =
   'Lunara opens publik’s support page with only the app name and the reason you pick. It sends no chat text and no health data. You can paste text on that page if you choose.'
 
 /**
- * publik's help and support page for the in-app sheet, with the app name. A reported AI answer adds
- * only `topic=ai-answer` and the reason id: never the chat text, the answer or health data.
- * The person can paste text on the page if they choose to.
+ * publik's help and support page for the in-app sheet: the app slug and the app name
+ * (`app_name`), so the page can show them. A reported AI answer adds only
+ * `topic=ai-answer`, the reason id and the words of that reason (`reason_label`,
+ * blind test round 2, L8): never the chat text, the answer or health data.
+ * The person can paste text on the page if they choose to. The page ignores the
+ * parameters that it does not know yet; they stay in the link.
  */
 export function publikSupportUrl(report?: { reason: ReportReason }): string {
-  const query = new URLSearchParams({ app: APP_SLUG })
+  const query = new URLSearchParams({ app: APP_SLUG, app_name: APP_NAME })
   if (report) {
     query.set('topic', 'ai-answer')
     query.set('reason', report.reason)
+    query.set('reason_label', REPORT_REASONS.find((reason) => reason.id === report.reason)?.label ?? report.reason)
   }
   return `${origin()}/in-app/support?${query.toString()}`
 }

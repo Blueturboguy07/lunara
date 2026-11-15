@@ -15,6 +15,7 @@ import {
   type GateScreen,
   type GateUI,
 } from '../lib/publik'
+import { useApp } from '../state/appStore'
 import { LunaraMark } from './LunaraMark'
 
 /**
@@ -64,10 +65,15 @@ const ui: GateUI = {
   },
 }
 
-/** "Connect your plan" selects publik API for Lunara AI; "Use my own key" keeps the person's own provider. */
+/**
+ * "Use my publik plan" selects publik API for Lunara AI. "Use my own AI key" changes
+ * no AI setting: Lunara AI opens on the key entry, and nothing changes until the
+ * person saves a key there (blind test round 2, M2).
+ */
 async function settle<T extends GateResult | null>(result: T): Promise<T> {
   if (result?.chosenNow && result.choice) await applyChoiceToAi(result.choice).catch(() => undefined)
   draw(null)
+  if (result?.chosenNow && result.choice === 'own_key') useApp.getState().openAiKeyEntry()
   return result
 }
 

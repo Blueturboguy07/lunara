@@ -16,6 +16,8 @@ export const SECRET_KEYS: string[] = [
   SK.publikCardSeen,
   SK.publikChoice,
   SK.publikTelemetryId,
+  SK.publikPrepaidLevel,
+  SK.publikAiProviders,
   SK.aiHealthConsent,
 ]
 

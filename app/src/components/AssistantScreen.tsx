@@ -30,6 +30,7 @@ import { CHAT_NOT_SAVED, chatDestination, historyForSend, NEW_CHAT_NOTICE } from
 import {
   agreeToChat,
   CHAT_AGREEMENT_ACCEPT,
+  CONSENT_NEEDS_INTERNET,
   CHAT_AGREEMENT_DECLINE,
   CHAT_AGREEMENT_TITLE,
   CHAT_SENDS_EVERY_TIME,
@@ -45,6 +46,7 @@ import {
 import {
   DEFAULT_PUBLIK_MODEL,
   disconnectPublik,
+  cachedAiProviders,
   fetchPublikWallet,
   hasPublikKey,
   markPublikCardSeen,
@@ -68,7 +70,7 @@ import {
   REPORT_ANSWER_LABEL,
   REPORT_ANSWER_NOTE,
   REPORT_REASONS,
-  resolveProvider,
+  activeAiProvider,
   setChoice,
   type PublikClaimState,
   type PublikEndpoint,
@@ -82,6 +84,8 @@ import {
   setSecureSecret,
 } from '../native/secureVault'
 import { NO_LINK_PLAN_TEXT } from '../lib/storefront'
+import { guardAnswerDates, renderAnswerDates } from '../lib/answerDates'
+import { localToday } from '../lib/dates'
 import { ChatMarkdown } from './ChatMarkdown'
 import { PlanUseMeter } from './PlanUseMeter'
 import { useApp } from '../state/appStore'
@@ -129,6 +133,9 @@ interface PublikCard {
 
 export function AssistantScreen() {
   const setAssistantOpen = useApp((state) => state.setAssistantOpen)
+  // "Use my own AI key" on the gate's plan screen (blind test round 2, M2).
+  const keyEntry = useApp((state) => state.aiKeyEntry)
+  const [focusKey, setFocusKey] = useState(0)
   const [provider, setProvider] = useState<AssistantProvider>('anthropic')
   const [model, setModel] = useState(DEFAULT_ANTHROPIC_MODEL)
   const [baseUrl, setBaseUrl] = useState('')
@@ -162,6 +169,10 @@ export function AssistantScreen() {
   const [reportingAnswer, setReportingAnswer] = useState<number | null>(null)
   // GET /wallet `ai_providers`: the true companies behind publik API, named on the agreement screen.
   const [aiProviders, setAiProviders] = useState<string[] | null>(null)
+  // Where that list came from: GET /wallet in this session, the copy kept on this phone, or nowhere yet.
+  // Offline with no copy, the publik agreement cannot be accepted: it must name the providers (round 2, M5).
+  const [providersFrom, setProvidersFrom] = useState<'wallet' | 'phone' | 'none'>('none')
+  const [providersChecking, setProvidersChecking] = useState(false)
   const subscriptionTokens = claudeSubscriptionTokensAllowed()
   // Purchase links, buttons and prices: US App Store storefront only (lib/storefront.ts).
   const purchaseLinks = usePurchaseLinks()
@@ -174,12 +185,19 @@ export function AssistantScreen() {
     try {
       const wallet = await fetchPublikWallet()
       setPublikUsage(wallet)
-      setAiProviders(wallet.aiProviders)
+      const kept = wallet.aiProviders ?? (await cachedAiProviders())
+      setAiProviders(kept)
+      setProvidersFrom(kept && !wallet.aiProviders ? 'phone' : 'wallet')
       if (wallet.claimState) setClaimState(wallet.claimState)
       if (wallet.claimUrl) setClaimUrl(wallet.claimUrl)
       return wallet
     } catch {
-      // the line stays "Ready"; nothing is charged by a failed read
+      // the line stays "Ready"; nothing is charged by a failed read. Offline: the list kept on this phone.
+      const kept = await cachedAiProviders()
+      if (kept) {
+        setAiProviders((current) => current ?? kept)
+        setProvidersFrom((current) => (current === 'none' ? 'phone' : current))
+      }
       return null
     }
   }
@@ -188,7 +206,6 @@ export function AssistantScreen() {
     let alive = true
     ;(async () => {
       const [
-        savedProvider,
         savedModel,
         savedBaseUrl,
         savedConsent,
@@ -201,7 +218,6 @@ export function AssistantScreen() {
         local,
         endpoint,
       ] = await Promise.all([
-        getSetting(SK.aiProvider),
         getSetting(SK.aiModel),
         getSetting(SK.aiBaseUrl),
         getSetting(SK.aiConsent),
@@ -216,19 +232,8 @@ export function AssistantScreen() {
       ])
       // No saved provider yet: the answer to the gate's plan screen decides
       // (Connect your plan = publik API); with no answer, a publik-capable build preselects publik.
-      const gateProvider = savedProvider ? null : await resolveProvider(null)
-      const nextProvider: AssistantProvider =
-        savedProvider === 'openai'
-          ? 'openai'
-          : savedProvider === 'anthropic'
-            ? 'anthropic'
-            : savedProvider === 'publik' && available
-              ? 'publik'
-              : gateProvider?.kind === 'publik'
-                ? 'publik'
-                : available && (await getSetting(SK.publikChoice)) !== 'own_key'
-                  ? 'publik' // fresh install on a publik-capable build: preselected
-                  : 'anthropic'
+      // The Settings row shows the same choice (activeAiProvider in lib/publik.ts).
+      const nextProvider: AssistantProvider = await activeAiProvider()
 
       // One-time migration from the old Dexie implementation. Plaintext is
       // removed immediately after the secure bridge accepts it.
@@ -291,6 +296,39 @@ export function AssistantScreen() {
   useEffect(() => {
     scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: 'smooth' })
   }, [messages, busy])
+
+  // "Use my own AI key" (round 2, M2): open the key entry at once. This only shows the
+  // own-key form; no setting and no key changes until the person taps Save with a key.
+  useEffect(() => {
+    if (!keyEntry || loading) return
+    useApp.getState().setAiKeyEntry(false)
+    setPublikCard(null)
+    setSetupOpen(true)
+    void (async () => {
+      if (provider === 'publik') await chooseProvider('anthropic')
+      setFocusKey((n) => n + 1)
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [keyEntry, loading])
+
+  useEffect(() => {
+    if (!focusKey) return
+    const frame = requestAnimationFrame(() => {
+      const field = document.getElementById('assistant-key')
+      field?.scrollIntoView({ block: 'center' })
+      field?.focus()
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [focusKey])
+
+  // The publik agreement opened before publik named its AI providers: ask once (and read the copy on this phone).
+  const providersNeeded = chatAsk?.destination.id === 'publik' && providersFrom === 'none' && aiProviders === null
+  useEffect(() => {
+    if (!providersNeeded) return
+    setProvidersChecking(true)
+    void refreshWallet().finally(() => setProvidersChecking(false))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [providersNeeded])
 
   // AI chat starts with the agreement screen when this provider has no agreement yet.
   // send() checks again, so a message typed before this answer still waits for it.
@@ -393,6 +431,16 @@ export function AssistantScreen() {
     }
     try {
       const suppliedKey = keyInput.trim()
+      // No key: nothing is saved (round 2, M2). The provider, the model and the
+      // plan-screen answer change only together with a key.
+      if (!apiKey && !suppliedKey) {
+        setError(
+          provider === 'anthropic'
+            ? anthropicCredentialHint()
+            : 'Add an OpenAI project key, or choose another provider.',
+        )
+        return
+      }
       if (suppliedKey) {
         if (provider === 'anthropic' && acceptedAnthropicCredential(suppliedKey) === null) {
           setError(
@@ -419,14 +467,6 @@ export function AssistantScreen() {
         setChoice('own_key'),
       ])
       setModel(cleanModel)
-      if (!apiKey && !suppliedKey) {
-        setError(
-          provider === 'anthropic'
-            ? anthropicCredentialHint()
-            : 'Add an OpenAI project key, or choose another provider.',
-        )
-        return
-      }
       setSetupOpen(false)
       setNotice('AI connection settings saved.')
     } catch (reason) {
@@ -550,7 +590,8 @@ export function AssistantScreen() {
           throw reason
         }
       }
-      setMessages([...next, { role: 'assistant', content: reply.text }])
+      // Guessed calendar dates go before the answer is kept; the placeholders stay (lib/answerDates.ts).
+      setMessages([...next, { role: 'assistant', content: guardAnswerDates(reply.text).text, asOf: localToday() }])
       if (reply.publik) {
         if (reply.publik.claimState) setClaimState(reply.publik.claimState)
         // The plan use comes from GET /wallet (percent and reset), not from the reply headers.
@@ -566,7 +607,7 @@ export function AssistantScreen() {
 
   /** "Turn on AI chat": AI chat with this provider and the ticked categories; then the waiting message goes. */
   async function agreeAndContinue() {
-    if (!chatAsk) return
+    if (!chatAsk || publikConsentWaits) return
     const { text, destination } = chatAsk
     await agreeToChat(destination, selectedHealthKinds(consent))
     setChatAsk(null)
@@ -596,6 +637,9 @@ export function AssistantScreen() {
     }
   }
 
+  // The publik agreement names the AI providers; with no list from publik and none kept on this phone, it waits.
+  const publikConsentWaits = chatAsk?.destination.id === 'publik' && providersFrom === 'none' && aiProviders === null
+  const publikConsentOffline = publikConsentWaits && !providersChecking
   const sharedCount = Object.values(consent).filter(Boolean).length
   const linkTarget = claimUrl
   const linkLabel = publikLinkButtonLabel(claimState)
@@ -705,7 +749,23 @@ export function AssistantScreen() {
             <p className="microcopy">{CHAT_SENDS_WITH_TICKED}</p>
             <p className="microcopy">{CHAT_SENDS_EVERY_TIME}</p>
           </section>
-          <button className="cta" onClick={() => void agreeAndContinue()}>
+          {publikConsentOffline && (
+            <div className="assistant-error" role="alert">
+              <span>{CONSENT_NEEDS_INTERNET}</span>
+              <div className="assistant-error-actions">
+                <button
+                  className="text-button"
+                  onClick={() => {
+                    setProvidersChecking(true)
+                    void refreshWallet().finally(() => setProvidersChecking(false))
+                  }}
+                >
+                  Try again
+                </button>
+              </div>
+            </div>
+          )}
+          <button className="cta" onClick={() => void agreeAndContinue()} disabled={publikConsentWaits}>
             {CHAT_AGREEMENT_ACCEPT}
           </button>
           <button className="text-button" onClick={chatNotNow}>
@@ -1026,36 +1086,22 @@ export function AssistantScreen() {
                     </span>
                   )}
                   {message.role === 'assistant' ? (
-                    <ChatMarkdown text={message.content} />
+                    <ChatMarkdown text={renderAnswerDates(message.content, message.asOf ?? localToday())} />
                   ) : (
                     <span>{message.content}</span>
                   )}
                 </div>
-                {message.role === 'assistant' && reportingAnswer !== index && (
-                  <button className="chat-report-button" onClick={() => setReportingAnswer(index)}>
+                {message.role === 'assistant' && (
+                  <button
+                    className="chat-report-button"
+                    onClick={() => {
+                      // Close the keyboard: the reason card must not sit under it (round 2, M4).
+                      composerInput.current?.blur()
+                      setReportingAnswer(index)
+                    }}
+                  >
                     {REPORT_ANSWER_LABEL}
                   </button>
-                )}
-                {message.role === 'assistant' && reportingAnswer === index && (
-                  <div className="chat-report" role="group" aria-label={`${REPORT_ANSWER_LABEL}: pick a reason`}>
-                    <p>{REPORT_ANSWER_NOTE}</p>
-                    <div className="chat-report-reasons">
-                      {REPORT_REASONS.map((reason) => (
-                        <button
-                          key={reason.id}
-                          onClick={() => {
-                            setReportingAnswer(null)
-                            openPublikLink(publikSupportUrl({ reason: reason.id }))
-                          }}
-                        >
-                          {reason.label}
-                        </button>
-                      ))}
-                    </div>
-                    <button className="chat-report-cancel" onClick={() => setReportingAnswer(null)}>
-                      Cancel
-                    </button>
-                  </div>
                 )}
               </div>
             ))}
@@ -1075,7 +1121,39 @@ export function AssistantScreen() {
         </>
       )}
 
-      {!loading && !setupOpen && !publikCard && !chatAsk && (
+      {!loading && !setupOpen && !publikCard && !chatAsk && reportingAnswer !== null && messages[reportingAnswer]?.role === 'assistant' && (
+        // The reason card is a layer over the chat and the message box (round 2, M4): all of it
+        // shows, and no tap reaches the message box under it. A tap outside the card cancels.
+        <div className="chat-report-layer" onClick={() => setReportingAnswer(null)}>
+          <div
+            className="chat-report"
+            role="dialog"
+            aria-modal="true"
+            aria-label={`${REPORT_ANSWER_LABEL}: pick a reason`}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <p>{REPORT_ANSWER_NOTE}</p>
+            <div className="chat-report-reasons">
+              {REPORT_REASONS.map((reason) => (
+                <button
+                  key={reason.id}
+                  onClick={() => {
+                    setReportingAnswer(null)
+                    openPublikLink(publikSupportUrl({ reason: reason.id }))
+                  }}
+                >
+                  {reason.label}
+                </button>
+              ))}
+            </div>
+            <button className="chat-report-cancel" onClick={() => setReportingAnswer(null)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {!loading && !setupOpen && !publikCard && !chatAsk && reportingAnswer === null && (
         <form
           className="assistant-compose"
           onSubmit={(event) => {

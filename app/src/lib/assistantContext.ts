@@ -7,7 +7,9 @@ import {
   type DailyLog,
   type Goal,
 } from '../db/schema'
+import type { Prediction } from '../engine/cycle'
 import { localToday } from './dates'
+import { forecastOn, readForecastSource } from './sharedForecast'
 
 /**
  * The tracker categories the person ticks for Lunara AI. Notes are not a
@@ -41,18 +43,26 @@ export interface TrackerSnapshot {
   pregnancyLMP?: string
   baselineCycleLength?: number
   today: string
+  /**
+   * The forecast that Today and the Calendar show (lib/sharedForecast.ts), so the
+   * AI summary names the same next period. Never sent as it is: lib/aiPayload.ts
+   * turns its days into relative days.
+   */
+  prediction?: Prediction
 }
 
 /** Reads the tracker data for a message; null when nothing is ticked (nothing is read). */
 export async function collectTrackerSnapshot(consent: AssistantConsent): Promise<TrackerSnapshot | null> {
   if (!Object.values(consent).some(Boolean)) return null
-  const [logs, periodStarts, ovulations, goal, pregnancyLMP, cycleLength] = await Promise.all([
+  const today = localToday()
+  const [logs, periodStarts, ovulations, goal, pregnancyLMP, cycleLength, source] = await Promise.all([
     db.dailyLogs.toArray(),
     getPeriodStarts(),
     getOvulations(),
     getSetting(SK.goal),
     getSetting(SK.pregnancyLMP),
     getSetting(SK.cycleLength),
+    readForecastSource(),
   ])
   return {
     logs,
@@ -61,7 +71,8 @@ export async function collectTrackerSnapshot(consent: AssistantConsent): Promise
     goal: (goal ?? 'cycle') as Goal,
     pregnancyLMP,
     baselineCycleLength: Number(cycleLength) || undefined,
-    today: localToday(),
+    today,
+    prediction: forecastOn(source, today).prediction,
   }
 }
 

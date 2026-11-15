@@ -4,6 +4,7 @@ import { ARTICLES } from '../content/articles'
 import { db, getSetting, SK, type Goal } from '../db/schema'
 import { isAdultBirthYear } from '../lib/publikApi'
 import { useApp } from '../state/appStore'
+import { ArrowIcon } from '../components/ArrowIcon'
 
 const GOAL_CATEGORY: Record<Goal, string> = {
   cycle: 'Cycle basics',
@@ -123,7 +124,7 @@ export function Insights() {
                   <span className="article-copy">
                     <span className="article-meta">{article.category} · {article.minutes} min read</span>
                     <strong>{article.title}</strong>
-                    <span className="article-open" aria-hidden="true">Read <b>↗</b></span>
+                    <span className="article-open" aria-hidden="true">Read <b><ArrowIcon /></b></span>
                   </span>
                 </button>
               ))}
@@ -186,7 +187,7 @@ export function Insights() {
                         )}
                       </span>
                       <strong>{article.title}</strong>
-                      <span className="article-open" aria-hidden="true">Read <b>↗</b></span>
+                      <span className="article-open" aria-hidden="true">Read <b><ArrowIcon /></b></span>
                     </span>
                   </button>
                 ))}

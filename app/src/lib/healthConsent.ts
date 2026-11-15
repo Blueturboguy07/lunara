@@ -50,6 +50,9 @@ export const CHAT_SENDS_WITH_TICKED = 'The summary uses relative days, such as â
 export const CHAT_AGREEMENT_TITLE = 'AI chat is optional'
 export const CHAT_AGREEMENT_ACCEPT = 'Turn on AI chat'
 export const CHAT_AGREEMENT_DECLINE = 'Not now'
+/** publik API offline, and this phone never got the provider list: the agreement cannot name them yet (round 2, M5). */
+export const CONSENT_NEEDS_INTERNET =
+  'Connect to the internet to turn on AI chat. Lunara must first get the names of the AI providers that publik uses.'
 
 export const DATA_STAYS_ON_PHONE = 'Your data stays on this phone unless you turn on AI chat or encrypted backup.'
 

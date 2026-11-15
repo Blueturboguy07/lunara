@@ -8,6 +8,7 @@ import {
   type TrackerCustomization,
 } from '../content/trackerCatalog'
 import { getSetting, setSetting } from '../db/schema'
+import { ArrowIcon } from '../components/ArrowIcon'
 import '../styles/health.css'
 
 export interface TrackerCustomizeScreenProps {
@@ -122,7 +123,7 @@ export function TrackerCustomizeScreen({ onBack }: TrackerCustomizeScreenProps) 
                         onClick={() => move(section.id, -1)}
                         aria-label={`Move ${section.label} up`}
                       >
-                        ↑
+                        <ArrowIcon direction="up" />
                       </button>
                       <button
                         className="health-sort-button"
@@ -130,7 +131,7 @@ export function TrackerCustomizeScreen({ onBack }: TrackerCustomizeScreenProps) 
                         onClick={() => move(section.id, 1)}
                         aria-label={`Move ${section.label} down`}
                       >
-                        ↓
+                        <ArrowIcon direction="down" />
                       </button>
                       <button
                         className="health-toggle"

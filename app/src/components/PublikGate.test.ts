@@ -5,13 +5,20 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 vi.mock('../native/runtime', () => ({ isNative: false, nativePlatform: 'web' }))
 vi.mock('@capacitor/browser', () => ({ Browser: { open: async () => undefined } }))
 
-const gate = vi.hoisted(() => ({ results: [] as Array<'fail' | 'pass'>, calls: 0 }))
+const gate = vi.hoisted(() => ({
+  results: [] as Array<'fail' | 'pass'>,
+  calls: 0,
+  choice: null as 'publik' | 'own_key' | null,
+  applied: [] as string[],
+}))
 vi.mock('../lib/publik', () => ({
-  applyChoiceToAi: async () => undefined,
+  applyChoiceToAi: async (choice: string) => {
+    gate.applied.push(choice)
+  },
   ensureSignedIn: async () => {
     gate.calls++
     if (gate.results.shift() === 'fail') throw Object.assign(new Error('Transaction aborted'), { name: 'AbortError' })
-    return { key: 'pk_live_x', wallet: null, choice: null, chosenNow: false, offline: false }
+    return { key: 'pk_live_x', wallet: null, choice: gate.choice, chosenNow: gate.choice !== null, offline: false }
   },
   gateScreen: (id: string, _w: unknown, note: string | null, message?: string) => ({
     id,
@@ -29,12 +36,16 @@ vi.mock('../lib/publik', () => ({
   signInOnDemand: async () => null,
 }))
 
+import { useApp } from '../state/appStore'
 import { forgetWall, passWall, startWall } from './PublikGate'
 
 beforeEach(() => {
   forgetWall()
   gate.results = []
   gate.calls = 0
+  gate.choice = null
+  gate.applied = []
+  useApp.setState({ assistantOpen: false, aiKeyEntry: false })
 })
 
 describe('the wall never freezes', () => {
@@ -65,5 +76,20 @@ describe('the wall never freezes', () => {
     forgetWall()
     await passWall(async () => 'retry')
     expect(gate.calls).toBe(2)
+  })
+})
+
+describe('"Use my own AI key" on the plan screen (blind test round 2, M2)', () => {
+  it('opens Lunara AI on the key entry', async () => {
+    gate.choice = 'own_key'
+    await passWall(async () => 'retry')
+    expect(useApp.getState()).toMatchObject({ assistantOpen: true, aiKeyEntry: true })
+  })
+
+  it('"Use my publik plan" does not open the key entry', async () => {
+    gate.choice = 'publik'
+    await passWall(async () => 'retry')
+    expect(gate.applied).toEqual(['publik'])
+    expect(useApp.getState()).toMatchObject({ assistantOpen: false, aiKeyEntry: false })
   })
 })
