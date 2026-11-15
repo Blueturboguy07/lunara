@@ -7,6 +7,7 @@ import { CalendarScreen } from './components/CalendarScreen'
 import { DoctorReport } from './components/DoctorReport'
 import { LogSheet } from './components/LogSheet'
 import { PinLock } from './components/PinLock'
+import { askPlanAfterOnboarding, RequirePublik } from './components/PublikGate'
 import { TabBar } from './components/TabBar'
 import { ensureHealthProfile, getHealthProfile, getSetting, SK } from './db/schema'
 import { resolvePregnancyDating } from './engine/pregnancyDating'
@@ -35,6 +36,7 @@ export default function App() {
     closeSheet,
     calendarOpen,
     assistantOpen,
+    setAssistantOpen,
     reportOpen,
     cycleReportOpen,
     setCycleReportOpen,
@@ -111,7 +113,16 @@ export default function App() {
 
 
   if (!ready) return <div className="page page-loading" role="status" aria-label="Loading Lunara" />
-  if (!onboarded) return <Onboarding onDone={() => setOnboarded(true)} />
+  if (!onboarded)
+    return (
+      <Onboarding
+        onDone={() => {
+          setOnboarded(true)
+          // Required mode: the age is known now, so an adult sees the plan screen (lib/publik.ts).
+          askPlanAfterOnboarding()
+        }}
+      />
+    )
   if (locked) return <PinLock />
 
   return (
@@ -128,7 +139,12 @@ export default function App() {
         <LogSheet date={sheetDate} initialFocus={sheetFocus ?? undefined} onClose={closeSheet} />
       )}
       {calendarOpen && <CalendarScreen />}
-      {assistantOpen && <AssistantScreen />}
+      {assistantOpen && (
+        // Optional gate mode: Sign in with publik first ("Not now" closes Lunara AI).
+        <RequirePublik onCancel={() => setAssistantOpen(false)}>
+          <AssistantScreen />
+        </RequirePublik>
+      )}
       {reportOpen && <DoctorReport />}
       {cycleReportOpen && <CycleReportScreen onBack={() => setCycleReportOpen(false)} />}
       {pregnancyDetailOpen && flags?.pregnancyDating && (

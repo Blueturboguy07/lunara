@@ -1,6 +1,7 @@
 import UIKit
 import Capacitor
 import BackgroundTasks
+import Security
 import WidgetKit
 
 @UIApplicationMain
@@ -8,6 +9,33 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     var window: UIWindow?
     private let widgetRefreshTaskIdentifier = "app.lunara.mobile.widget-refresh"
+    /// LunaraNativePlugin.swift keeps the vault under this Keychain service.
+    private let vaultKeychainService = "app.lunara.mobile.vault"
+    private let installedMarker = "lunara.installed.v1"
+
+    func application(_ application: UIApplication, willFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
+        clearVaultOnFirstLaunchAfterInstall()
+        return true
+    }
+
+    /// The iOS Keychain keeps items after the app is deleted, so a new install would find the
+    /// old publik key and the old own AI keys. A fresh install starts with an empty vault: the
+    /// marker lives in UserDefaults, which the deletion removes. An update from a build without
+    /// the marker keeps its vault, because its WebView data (Lunara's database) is already there.
+    private func clearVaultOnFirstLaunchAfterInstall() {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: installedMarker) else { return }
+        defaults.set(true, forKey: installedMarker)
+        if let library = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first,
+           FileManager.default.fileExists(atPath: library.appendingPathComponent("WebKit").path) {
+            return
+        }
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: vaultKeychainService
+        ]
+        SecItemDelete(query as CFDictionary)
+    }
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         BGTaskScheduler.shared.register(

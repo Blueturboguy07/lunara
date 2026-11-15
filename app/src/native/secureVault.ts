@@ -70,6 +70,23 @@ export async function getSecureSecret(key: string): Promise<string | null> {
   return (await LunaraNative.secureGet({ key })).value
 }
 
+/**
+ * The value, or null when the vault cannot read this item ("Secret could not be
+ * decrypted", for example after an Android restore or device transfer). Such an
+ * item can never be read again, so it is deleted: the person enters the key
+ * again instead of being locked out. While an iPhone is still locked
+ * (KEYCHAIN_LOCKED) the item is kept and the error goes to the caller.
+ */
+export async function getSecureSecretOrForget(key: string): Promise<string | null> {
+  try {
+    return await getSecureSecret(key)
+  } catch (error) {
+    if (typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 'KEYCHAIN_LOCKED') throw error
+    await deleteSecureSecret(key).catch(() => undefined)
+    return null
+  }
+}
+
 export async function deleteSecureSecret(key: string): Promise<void> {
   assertValidKey(key)
   if (!isNative) {

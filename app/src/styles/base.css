@@ -73,8 +73,23 @@ main {
   overscroll-behavior-y: contain;
   -webkit-overflow-scrolling: touch;
   touch-action: pan-y;
-  padding-top: var(--safe-top);
   scrollbar-width: none;
+}
+
+/*
+ * A solid band under the status bar and the Dynamic Island. It stays at the top
+ * while the tab scrolls (sticky), so Today, Insights, Graphs and Settings never
+ * scroll under the clock. It takes the safe-area height, as the old padding did.
+ * Above the page content (z-index 12 at most), below the tab bar and overlays.
+ */
+main::before {
+  content: '';
+  position: sticky;
+  top: 0;
+  z-index: 15;
+  display: block;
+  height: var(--safe-top);
+  background: var(--paper-100);
 }
 
 main::-webkit-scrollbar {

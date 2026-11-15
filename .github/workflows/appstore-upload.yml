@@ -1,0 +1,475 @@
+# App Store upload for publik Lunara: a signed RELEASE build for App Store Connect (TestFlight).
+#
+# App Store ids: app.lunara.mobile and app.lunara.mobile.widget (HealthKit, Associated
+# Domains and App Groups on the App ID). The web bundle is a release App Store build
+# (LUNARA_RELEASE=1, APP_STORE_BUILD=1, PUBLIK_GATE_MODE=required, no PUBLIK_TEST_HOOKS, the app
+# token from the PUBLIK_APP_TOKEN secret); the Xcode "Check the Release build" phase refuses
+# any other bundle.
+#
+# Run it by hand (Actions > App Store upload > Run workflow):
+#   upload false (default): archive, export (method app-store-connect), check the ipa and
+#                           validate it with App Store Connect. Nothing is uploaded.
+#   upload true:            the same, then the upload. The app record must exist first.
+#   signing manual (default on a push): the Apple Distribution certificate from the repo secrets
+#                           DIST_CERT_P12 (base64 .p12) + DIST_CERT_PASSWORD and the App Store
+#                           profiles named in STORE_PROFILES (fetched with the API key).
+#   signing auto:           Xcode automatic signing with the API key (-allowProvisioningUpdates).
+#   build_number:           CFBundleVersion; empty = 100 + the run number (unique, increasing).
+#
+# Secrets: PUBLIK_APP_TOKEN (the publik app token, pat_), ASC_KEY_P8 / ASC_KEY_ID /
+# ASC_ISSUER_ID (App Store Connect API key), DIST_CERT_P12 / DIST_CERT_PASSWORD. No step
+# prints a secret. The .p8, the .p12 and the keychain are deleted at the end. It never
+# submits a build for review.
+
+name: App Store upload
+
+on:
+  # A change to this file runs it once with the defaults (no upload).
+  push:
+    branches: [signin-gate]
+    paths: [".github/workflows/appstore-upload.yml"]
+  workflow_dispatch:
+    inputs:
+      upload:
+        description: "Upload the signed build to App Store Connect (the app record must exist first)"
+        type: boolean
+        default: false
+      signing:
+        description: "manual = the Apple Distribution certificate (DIST_CERT_P12) + App Store profiles; auto = Xcode automatic signing with the API key"
+        type: choice
+        options: [manual, auto]
+        default: manual
+      build_number:
+        description: "CFBundleVersion (empty = 100 + the run number)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: appstore-upload-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # A build machine is not a user (publikhq.com/skills/telemetry.md, section 6).
+  DO_NOT_TRACK: "1"
+  TEAM_ID: R5R3ZS54LV
+  SIGNING: ${{ inputs.signing || 'manual' }}
+  # App Store bundle ids: {"id in the repo": "id in App Store Connect"}.
+  STORE_IDS: '{"app.lunara.mobile": "app.lunara.mobile", "app.lunara.mobile.widget": "app.lunara.mobile.widget"}'
+  # The App Store provisioning profile of each App Store bundle id (manual signing).
+  STORE_PROFILES: '{"app.lunara.mobile": "publik Lunara App Store", "app.lunara.mobile.widget": "publik Lunara Widget App Store"}'
+  MAIN_BUNDLE_ID: app.lunara.mobile
+
+jobs:
+  appstore:
+    name: Signed App Store build (upload ${{ inputs.upload == true }}, signing ${{ inputs.signing || 'manual' }})
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - name: Check the secrets (names only, never a value)
+        env:
+          PUBLIK_APP_TOKEN: ${{ secrets.PUBLIK_APP_TOKEN }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          DIST_CERT_P12: ${{ secrets.DIST_CERT_P12 }}
+          DIST_CERT_PASSWORD: ${{ secrets.DIST_CERT_PASSWORD }}
+        run: |
+          missing=""
+          for n in PUBLIK_APP_TOKEN ASC_KEY_P8 ASC_KEY_ID ASC_ISSUER_ID; do [ -n "${!n}" ] || missing="$missing $n"; done
+          if [ "$SIGNING" = manual ]; then
+            for n in DIST_CERT_P12 DIST_CERT_PASSWORD; do [ -n "${!n}" ] || missing="$missing $n"; done
+          fi
+          [ -z "$missing" ] || { echo "::error::These repo secrets are empty:$missing"; exit 1; }
+          case "$PUBLIK_APP_TOKEN" in pat_*) ;; *) echo "::error::PUBLIK_APP_TOKEN is not a pat_ token."; exit 1 ;; esac
+          echo "The secrets are set."
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # The App Store needs a build made with a current SDK: the newest Xcode 26.x release (no beta).
+      - name: Select the newest Xcode 26
+        run: |
+          X=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | grep -E '/Xcode_26(\.[0-9]+)*\.app$' | sort -V | tail -n 1 || true)
+          if [ -z "$X" ]; then
+            ls -d /Applications/Xcode*.app
+            echo "::error::This runner has no Xcode 26 release."; exit 1
+          fi
+          sudo xcode-select -s "$X/Contents/Developer"
+          xcodebuild -version
+          echo "iOS SDK: $(xcrun --sdk iphoneos --show-sdk-version)"
+
+      - name: Build number
+        env:
+          INPUT_BUILD: ${{ inputs.build_number }}
+        run: |
+          B="$INPUT_BUILD"
+          [ -n "$B" ] || B=$((100 + GITHUB_RUN_NUMBER))
+          case "$B" in ''|*[!0-9]*) echo "::error::The build number '$B' is not a whole number."; exit 1 ;; esac
+          echo "BUILD_NUMBER=$B" >> "$GITHUB_ENV"
+          echo "Build number: $B"
+
+      # The .p8 goes to a temp file only; the last step deletes it.
+      - name: App Store Connect API key (temp file)
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+        run: |
+          umask 077
+          D="$RUNNER_TEMP/asc-keys"
+          mkdir -p "$D"
+          F="$D/AuthKey_${ASC_KEY_ID}.p8"
+          if printf '%s' "$ASC_KEY_P8" | grep -q 'BEGIN PRIVATE KEY'; then
+            printf '%s\n' "$ASC_KEY_P8" > "$F"
+          elif printf '%s' "$ASC_KEY_P8" | base64 --decode 2>/dev/null | grep -q 'BEGIN PRIVATE KEY'; then
+            printf '%s' "$ASC_KEY_P8" | base64 --decode > "$F"
+          else
+            { echo '-----BEGIN PRIVATE KEY-----'; printf '%s\n' "$ASC_KEY_P8" | tr -d ' \r'; echo '-----END PRIVATE KEY-----'; } > "$F"
+          fi
+          openssl pkey -in "$F" -noout || { echo "::error::ASC_KEY_P8 is not a readable private key."; exit 1; }
+          echo "ASC_KEY_PATH=$F" >> "$GITHUB_ENV"
+          echo "API_PRIVATE_KEYS_DIR=$D" >> "$GITHUB_ENV"
+          echo "The API key file is ready."
+
+      - name: "Manual signing: the Apple Distribution certificate and the App Store profiles"
+        if: env.SIGNING == 'manual'
+        env:
+          DIST_CERT_P12: ${{ secrets.DIST_CERT_P12 }}
+          DIST_CERT_PASSWORD: ${{ secrets.DIST_CERT_PASSWORD }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          KC="$RUNNER_TEMP/appstore-signing.keychain-db"
+          KCP=$(openssl rand -hex 24)
+          echo "::add-mask::$KCP"
+          security create-keychain -p "$KCP" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KCP" "$KC"
+          (umask 077; printf '%s' "$DIST_CERT_P12" | base64 --decode > "$RUNNER_TEMP/dist.p12")
+          security import "$RUNNER_TEMP/dist.p12" -k "$KC" -f pkcs12 -P "$DIST_CERT_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security > /dev/null
+          rm -f "$RUNNER_TEMP/dist.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KCP" "$KC" > /dev/null
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          echo "KEYCHAIN_PATH=$KC" >> "$GITHUB_ENV"
+          security find-identity -v -p codesigning "$KC" | sed -E 's/[0-9A-F]{40}/<sha1>/'
+          security find-identity -v -p codesigning "$KC" | grep -q '"Apple Distribution' || { echo "::error::No Apple Distribution identity in DIST_CERT_P12."; exit 1; }
+
+          # A short-lived App Store Connect token (never printed).
+          b64() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+          now=$(date +%s); exp=$((now + 900))
+          h=$(printf '{"alg":"ES256","kid":"%s","typ":"JWT"}' "$ASC_KEY_ID" | b64)
+          p=$(printf '{"iss":"%s","iat":%s,"exp":%s,"aud":"appstoreconnect-v1"}' "$ASC_ISSUER_ID" "$now" "$exp" | b64)
+          sig=$(printf '%s.%s' "$h" "$p" | openssl dgst -sha256 -sign "$ASC_KEY_PATH" | python3 -c '
+          import base64, sys
+          d = sys.stdin.buffer.read()
+          rl = d[3]; r = d[4:4 + rl]; sl = d[5 + rl]; s = d[6 + rl:6 + rl + sl]
+          r = r.lstrip(b"\0").rjust(32, b"\0"); s = s.lstrip(b"\0").rjust(32, b"\0")
+          print(base64.urlsafe_b64encode(r + s).rstrip(b"=").decode())')
+          T="$h.$p.$sig"
+          echo "::add-mask::$T"
+
+          D1="$HOME/Library/MobileDevice/Provisioning Profiles"
+          D2="$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"
+          mkdir -p "$D1" "$D2"
+          python3 -c 'import json, os; [print(v) for v in json.loads(os.environ["STORE_PROFILES"]).values()]' > "$RUNNER_TEMP/profile-names.txt"
+          while IFS= read -r NAME; do
+            ENC=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "$NAME")
+            curl -sS -g -H "Authorization: Bearer $T" \
+              "https://api.appstoreconnect.apple.com/v1/profiles?filter[name]=$ENC&filter[profileState]=ACTIVE&fields[profiles]=name,uuid,profileType,expirationDate,profileContent&limit=10" \
+              > "$RUNNER_TEMP/profile.json"
+            python3 - "$RUNNER_TEMP/profile.json" "$NAME" "$D1" "$D2" <<'PY'
+          import base64, json, os, sys
+          path, name, d1, d2 = sys.argv[1:5]
+          data = json.load(open(path))
+          if "errors" in data:
+              sys.exit("App Store Connect: " + "; ".join(e.get("detail", e.get("code", "")) for e in data["errors"]))
+          hits = [p for p in data.get("data", []) if p["attributes"]["name"] == name and p["attributes"]["profileType"] == "IOS_APP_STORE"]
+          if not hits:
+              sys.exit(f"No active IOS_APP_STORE profile named '{name}'.")
+          a = hits[0]["attributes"]
+          blob = base64.b64decode(a["profileContent"])
+          for d in (d1, d2):
+              open(os.path.join(d, a["uuid"] + ".mobileprovision"), "wb").write(blob)
+          print(f"profile: {name} | {a['uuid']} | expires {a['expirationDate']}")
+          PY
+          done < "$RUNNER_TEMP/profile-names.txt"
+          rm -f "$RUNNER_TEMP/profile.json" "$RUNNER_TEMP/profile-names.txt"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4.1.0
+        with:
+          version: "12.8.1"
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4.4.0
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build the web bundle (release, App Store build, gate required, no test hooks)
+        working-directory: app
+        env:
+          VITE_PUBLIK_APP_TOKEN: ${{ secrets.PUBLIK_APP_TOKEN }}
+          LUNARA_RELEASE: "1"
+          APP_STORE_BUILD: "1"
+          PUBLIK_GATE_MODE: required
+        run: |
+          pnpm build:native
+          npx cap sync ios
+          echo "Web bundle: $(cat ios/App/App/public/lunara-build.json)"
+
+      # This edits only the runner's copy of the project (it is never committed):
+      #   - every target with an id from STORE_IDS gets its App Store bundle id;
+      #   - manual signing: those targets sign with "Apple Distribution" and their App Store profile.
+      - name: App Store bundle ids and signing settings (runner copy of the project)
+        run: |
+          python3 - "app/ios/App/App.xcodeproj/project.pbxproj" <<'PY'
+          import json, os, re, sys
+          path = sys.argv[1]
+          ids = json.loads(os.environ["STORE_IDS"])
+          profiles = json.loads(os.environ["STORE_PROFILES"])
+          manual = os.environ["SIGNING"] == "manual"
+          team = os.environ["TEAM_ID"]
+          src = open(path, encoding="utf-8").read()
+          seen = {}
+          drop = re.compile(r'^[ \t]*"?(CODE_SIGN_STYLE|CODE_SIGN_IDENTITY(\[[^\]]*\])?|PROVISIONING_PROFILE_SPECIFIER(\[[^\]]*\])?|PROVISIONING_PROFILE(\[[^\]]*\])?|DEVELOPMENT_TEAM(\[[^\]]*\])?)"? = [^;]*;[ \t]*\n', re.M)
+          def fix(m):
+              head, body, tail = m.group(1), m.group(2), m.group(3)
+              b = re.search(r'^([ \t]*)PRODUCT_BUNDLE_IDENTIFIER = "?([^";]+)"?;[ \t]*$', body, re.M)
+              if not b or b.group(2) not in ids:
+                  return m.group(0)
+              ind, old = b.group(1), b.group(2)
+              new = ids[old]
+              body = body[:b.start()] + f"{ind}PRODUCT_BUNDLE_IDENTIFIER = {new};" + body[b.end():]
+              if manual:
+                  body = drop.sub("", body)
+                  body += (f'{ind}CODE_SIGN_STYLE = Manual;\n'
+                           f'{ind}CODE_SIGN_IDENTITY = "Apple Distribution";\n'
+                           f'{ind}"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "Apple Distribution";\n'
+                           f'{ind}DEVELOPMENT_TEAM = {team};\n'
+                           f'{ind}PROVISIONING_PROFILE_SPECIFIER = "{profiles[new]}";\n')
+              seen[new] = seen.get(new, 0) + 1
+              return head + body + tail
+          out = re.sub(r'(buildSettings = \{\n)(.*?)(^[ \t]*\};)', fix, src, flags=re.S | re.M)
+          if manual:
+              out = out.replace("ProvisioningStyle = Automatic;", "ProvisioningStyle = Manual;")
+          missing = [i for i in ids.values() if i not in seen]
+          if missing:
+              sys.exit(f"No build configuration with these ids: {missing}")
+          open(path, "w", encoding="utf-8").write(out)
+          for k, v in ids.items():
+              print(f"{k} -> {v} ({seen[v]} build configurations)" + (f", profile '{profiles[v]}'" if manual else ""))
+          PY
+
+      - name: Archive (Release, the Xcode release check runs)
+        working-directory: app/ios/App
+        env:
+          PUBLIK_APP_TOKEN: ${{ secrets.PUBLIK_APP_TOKEN }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          AUTH=()
+          if [ "$SIGNING" = auto ]; then
+            AUTH=(-allowProvisioningUpdates -authenticationKeyPath "$ASC_KEY_PATH" -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID")
+          fi
+          xcodebuild archive -project App.xcodeproj -scheme App -configuration Release \
+            -destination 'generic/platform=iOS' -archivePath "$RUNNER_TEMP/out/App.xcarchive" \
+            DEVELOPMENT_TEAM="$TEAM_ID" CURRENT_PROJECT_VERSION="$BUILD_NUMBER" PUBLIK_TEST_HOOKS=NO \
+            ${AUTH[@]+"${AUTH[@]}"} -quiet
+          APP="$RUNNER_TEMP/out/App.xcarchive/Products/Applications/App.app"
+          grep -q '"testHooks":false' "$APP/public/lunara-build.json"
+          grep -q '"gateMode":"required"' "$APP/public/lunara-build.json"
+          grep -q '"appToken":"env"' "$APP/public/lunara-build.json"
+          echo "Archived: $(cat "$APP/public/lunara-build.json")"
+
+      - name: Signature of the archived app
+        run: |
+          APP=$(ls -d "$RUNNER_TEMP/out/App.xcarchive/Products/Applications/"*.app | head -n 1)
+          echo "ARCHIVED_APP=$APP" >> "$GITHUB_ENV"
+          codesign -dvv "$APP" 2>&1 | grep -E '^(Identifier|Authority|TeamIdentifier)=' || true
+          for X in "$APP"/PlugIns/*.appex; do
+            [ -d "$X" ] || continue
+            codesign -dvv "$X" 2>&1 | grep -E '^(Identifier|Authority)=' || true
+          done
+
+      - name: Export the ipa (method app-store-connect)
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          python3 - "$RUNNER_TEMP/ExportOptions.plist" <<'PY'
+          import json, os, plistlib, sys
+          o = {
+              "method": "app-store-connect",
+              "teamID": os.environ["TEAM_ID"],
+              "destination": "export",
+              "uploadSymbols": True,
+              "manageAppVersionAndBuildNumber": False,
+              "signingStyle": "manual" if os.environ["SIGNING"] == "manual" else "automatic",
+          }
+          if o["signingStyle"] == "manual":
+              o["signingCertificate"] = "Apple Distribution"
+              o["provisioningProfiles"] = json.loads(os.environ["STORE_PROFILES"])
+          plistlib.dump(o, open(sys.argv[1], "wb"))
+          print(json.dumps(o, indent=1))
+          PY
+          AUTH=()
+          if [ "$SIGNING" = auto ]; then
+            AUTH=(-allowProvisioningUpdates -authenticationKeyPath "$ASC_KEY_PATH" -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID")
+          fi
+          xcodebuild -exportArchive -archivePath "$RUNNER_TEMP/out/App.xcarchive" \
+            -exportPath "$RUNNER_TEMP/out/export" -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" ${AUTH[@]+"${AUTH[@]}"}
+          IPA=$(ls "$RUNNER_TEMP/out/export/"*.ipa | head -n 1)
+          test -s "$IPA"
+          echo "IPA=$IPA" >> "$GITHUB_ENV"
+          ls -l "$IPA"
+
+      # App Store upload blockers, checked in the exported ipa.
+      - name: Check the ipa for upload blockers
+        run: |
+          set +e -u
+          W="$RUNNER_TEMP/ipa-check"
+          rm -rf "$W"; mkdir -p "$W"
+          ditto -x -k "$IPA" "$W"
+          APP=$(ls -d "$W"/Payload/*.app | head -n 1)
+          INFO="$APP/Info.plist"
+          fail=0
+          bad() { echo "::error::ipa check: $*"; fail=1; }
+          ok() { echo "ok:   $*"; }
+          note() { echo "note: $*"; }
+          pl() { /usr/libexec/PlistBuddy -c "Print :$2" "$1" 2>/dev/null; }
+
+          ID=$(pl "$INFO" CFBundleIdentifier); V=$(pl "$INFO" CFBundleShortVersionString); B=$(pl "$INFO" CFBundleVersion)
+          [ "$ID" = "$MAIN_BUNDLE_ID" ] && ok "bundle id $ID" || bad "CFBundleIdentifier is '$ID', not '$MAIN_BUNDLE_ID'"
+          [[ "$V" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]] && ok "version $V" || bad "CFBundleShortVersionString '$V'"
+          [ "$B" = "$BUILD_NUMBER" ] && ok "build $B" || bad "CFBundleVersion is '$B', not '$BUILD_NUMBER'"
+          DN=$(pl "$INFO" CFBundleDisplayName); [ -n "$DN" ] && ok "CFBundleDisplayName '$DN'" || bad "no CFBundleDisplayName"
+          [ "$(pl "$INFO" ITSAppUsesNonExemptEncryption)" = "false" ] && ok "ITSAppUsesNonExemptEncryption false" || bad "ITSAppUsesNonExemptEncryption is not false"
+          ok "MinimumOSVersion $(pl "$INFO" MinimumOSVersion)"
+          if pl "$INFO" UILaunchStoryboardName >/dev/null || pl "$INFO" UILaunchScreen >/dev/null; then ok "launch screen ($(pl "$INFO" UILaunchStoryboardName || echo UILaunchScreen))"; else bad "no launch screen (UILaunchStoryboardName or UILaunchScreen)"; fi
+          FAM=$(plutil -extract UIDeviceFamily json -o - "$INFO" 2>/dev/null)
+          [ "$FAM" = "[1]" ] && ok "iPhone only (UIDeviceFamily [1])" || note "UIDeviceFamily $FAM"
+          [ "$(pl "$INFO" DTPlatformName)" = "iphoneos" ] && ok "DTPlatformName iphoneos, SDK $(pl "$INFO" DTSDKName), Xcode $(pl "$INFO" DTXcode)" || bad "DTPlatformName is '$(pl "$INFO" DTPlatformName)'"
+          for k in NSCameraUsageDescription NSMicrophoneUsageDescription NSPhotoLibraryUsageDescription NSPhotoLibraryAddUsageDescription NSHealthShareUsageDescription NSHealthUpdateUsageDescription NSSpeechRecognitionUsageDescription NSLocalNetworkUsageDescription NSFaceIDUsageDescription; do
+            v=$(pl "$INFO" "$k") && note "$k = $v"
+          done
+
+          # Privacy manifest.
+          if [ -f "$APP/PrivacyInfo.xcprivacy" ] && plutil -lint "$APP/PrivacyInfo.xcprivacy" >/dev/null; then ok "PrivacyInfo.xcprivacy in the app"; else bad "no valid PrivacyInfo.xcprivacy in the app"; fi
+
+          # Icons: the iPhone icon files in the bundle and the App Store icon in Assets.car, with no alpha.
+          plutil -extract CFBundleIcons.CFBundlePrimaryIcon json -o - "$INFO" >/dev/null 2>&1 && ok "CFBundleIcons $(plutil -extract CFBundleIcons.CFBundlePrimaryIcon.CFBundleIconName raw -o - "$INFO" 2>/dev/null)" || bad "no CFBundleIcons in Info.plist"
+          ls "$APP"/AppIcon60x60@2x.png >/dev/null 2>&1 && ok "AppIcon60x60@2x.png (120 px iPhone icon) in the bundle" || bad "no AppIcon60x60@2x.png in the bundle"
+          if [ -f "$APP/Assets.car" ]; then
+            xcrun assetutil --info "$APP/Assets.car" > "$W/assets.json" 2>/dev/null
+            python3 - "$W/assets.json" > "$W/icons.txt" <<'PY'
+          import json, sys
+          items = [a for a in json.load(open(sys.argv[1])) if isinstance(a, dict) and "AppIcon" in str(a.get("Name", "")) and a.get("PixelWidth")]
+          for a in sorted(items, key=lambda a: a.get("PixelWidth", 0)):
+              print(a.get("PixelWidth"), a.get("Idiom", "-"), "opaque" if a.get("Opaque") else "ALPHA", a.get("RenditionName", ""))
+          PY
+            sort -u -n "$W/icons.txt" | sed 's/^/      icon /'
+            grep -q '^1024 ' "$W/icons.txt" && ok "1024 px App Store icon in Assets.car" || bad "no 1024 px App Store icon in Assets.car"
+            grep -q ' ALPHA ' "$W/icons.txt" && bad "an app icon in Assets.car has alpha" || ok "app icons in Assets.car are opaque"
+          else
+            bad "no Assets.car"
+          fi
+
+          # Machine code: arm64 only, built for iOS devices (no simulator slice).
+          python3 - "$APP" > "$W/macho.txt" <<'PY'
+          import os, sys
+          magic = {b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe", b"\xca\xfe\xba\xbe", b"\xfe\xed\xfa\xcf"}
+          for root, _, files in os.walk(sys.argv[1]):
+              for f in files:
+                  p = os.path.join(root, f)
+                  try:
+                      with open(p, "rb") as h:
+                          if h.read(4) in magic:
+                              print(p)
+                  except OSError:
+                      pass
+          PY
+          n=0
+          while IFS= read -r f; do
+            n=$((n + 1))
+            a=$(lipo -archs "$f" 2>/dev/null)
+            [ "$a" = "arm64" ] || bad "${f#$APP/}: architectures '$a' (want arm64 only)"
+            plat=$(vtool -show-build "$f" 2>/dev/null | awk '/platform/ {print $2; exit}')
+            case "$plat" in IOS|"") ;; *) bad "${f#$APP/}: platform $plat" ;; esac
+          done < "$W/macho.txt"
+          ok "$n Mach-O files checked (arm64, iOS device)"
+
+          # Signatures and entitlements: App Store profile, no get-task-allow, same version in every extension.
+          codesign --verify --deep --strict "$APP" && ok "codesign --verify --deep --strict" || bad "codesign verify failed"
+          for X in "$APP" "$APP"/PlugIns/*.appex "$APP"/Extensions/*.appex; do
+            [ -d "$X" ] || continue
+            n=$(basename "$X")
+            codesign -d --entitlements - --xml "$X" > "$W/ent.plist" 2>/dev/null
+            gta=$(pl "$W/ent.plist" get-task-allow || echo absent)
+            [ "$gta" = "true" ] && bad "$n: get-task-allow is true" || ok "$n: get-task-allow $gta"
+            note "$n entitlements: $(plutil -convert json -o - "$W/ent.plist" 2>/dev/null | python3 -c 'import json, sys; print(", ".join(sorted(json.load(sys.stdin))))' 2>/dev/null)"
+            if [ -f "$X/embedded.mobileprovision" ]; then
+              security cms -D -i "$X/embedded.mobileprovision" > "$W/prof.plist" 2>/dev/null
+              pl "$W/prof.plist" ProvisionedDevices >/dev/null && bad "$n: the profile lists devices (not an App Store profile)" || ok "$n: App Store profile '$(pl "$W/prof.plist" Name)'"
+            else
+              bad "$n: no embedded.mobileprovision"
+            fi
+            if [ "$X" != "$APP" ]; then
+              xi=$(pl "$X/Info.plist" CFBundleIdentifier)
+              case "$xi" in "$ID".*) ok "$n: id $xi" ;; *) bad "$n: id '$xi' does not start with '$ID.'" ;; esac
+              [ "$(pl "$X/Info.plist" CFBundleShortVersionString)" = "$V" ] && [ "$(pl "$X/Info.plist" CFBundleVersion)" = "$B" ] && ok "$n: version $V ($B)" || bad "$n: version differs from the app"
+              [ -f "$X/PrivacyInfo.xcprivacy" ] && ok "$n: PrivacyInfo.xcprivacy" || note "$n: no PrivacyInfo.xcprivacy"
+            fi
+          done
+          ls -d "$APP"/*.dSYM >/dev/null 2>&1 && bad "a dSYM is inside the app"
+          rm -rf "$W"
+          {
+            echo "### $MAIN_BUNDLE_ID $V ($B)"
+            echo "- signing: $SIGNING"
+            echo "- ipa: $(basename "$IPA"), $(du -h "$IPA" | cut -f1)"
+            echo "- ipa checks: $([ $fail = 0 ] && echo passed || echo FAILED)"
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $fail
+
+      # altool needs the app record in App Store Connect. Without it, this step reports the error
+      # (it fails the job only when the upload is on).
+      - name: Validate the ipa with App Store Connect
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          UPLOAD: ${{ inputs.upload }}
+        run: |
+          set -o pipefail
+          if xcrun altool --validate-app -f "$IPA" -t ios --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID" 2>&1 | tee "$RUNNER_TEMP/validate.log"; then
+            echo "- validate: passed" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- validate: FAILED (see the log)" >> "$GITHUB_STEP_SUMMARY"
+            if [ "$UPLOAD" = "true" ]; then exit 1; fi
+            echo "::warning::The ipa did not validate. The upload is off, so the job goes on."
+          fi
+
+      - name: Upload to App Store Connect
+        if: inputs.upload == true
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          xcrun altool --upload-app -f "$IPA" -t ios --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+          echo "- upload: done ($MAIN_BUNDLE_ID build $BUILD_NUMBER); App Store Connect now processes it" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Delete the key, the keychain and the build output
+        if: always()
+        run: |
+          rm -rf "$RUNNER_TEMP/asc-keys" "$RUNNER_TEMP/dist.p12" "$RUNNER_TEMP/out" "$RUNNER_TEMP/ipa-check"
+          if [ -n "${KEYCHAIN_PATH:-}" ]; then security delete-keychain "$KEYCHAIN_PATH" || true; fi
+          rm -f "$HOME/Library/MobileDevice/Provisioning Profiles/"*.mobileprovision "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/"*.mobileprovision
+          echo "Cleaned up."

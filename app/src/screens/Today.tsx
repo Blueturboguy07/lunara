@@ -5,16 +5,12 @@ import { LunaraMark } from '../components/LunaraMark'
 import { PREGNANCY_WEEKS } from '../content/pregnancyWeeks'
 import {
   db,
-  getHealthProfile,
   getSetting,
-  getOvulations,
-  getPeriodStarts,
   SK,
   type DailyLog,
   type Goal,
 } from '../db/schema'
 import { addDays, daysBetween } from '../engine/cycle'
-import { buildCycleForecast } from '../engine/cycleForecast'
 import {
   analyzePatterns,
   type CyclePhase,
@@ -27,14 +23,13 @@ import {
   type PregnancyDatingMethod,
   type PregnancyDatingResult,
 } from '../engine/pregnancyDating'
-import {
-  applyPredictionContext,
-  periodTimingStatus,
-} from '../engine/predictionContext'
-import { localToday } from '../lib/dates'
+import { periodTimingStatus } from '../engine/predictionContext'
+import { formatRange, localToday } from '../lib/dates'
+import { forecastOn, readForecastSource } from '../lib/sharedForecast'
 import { useHorizontalDrag } from '../lib/useHorizontalDrag'
 import { publishWidgetSnapshot, type CycleWidgetSnapshot } from '../native/widgets'
 import { useApp, type TrackerFocus } from '../state/appStore'
+import { ArrowIcon } from '../components/ArrowIcon'
 
 interface DailyInsight {
   key: string
@@ -70,6 +65,7 @@ function phaseFor(
   daysToOvulation: number | null,
   uncertaintyDays: number,
   stale = false,
+  flowLogged = false,
 ): PhaseHero {
   // A months-old period start tells us how long tracking lapsed, not where the
   // cycle is. Ask for a fresh date instead of counting across the gap.
@@ -81,7 +77,8 @@ function phaseFor(
       body: 'It has been a while since a period was logged, so Lunara paused its estimates. Add your most recent period to restart them.',
     }
   }
-  if (cycleDay && cycleDay <= 5) {
+  // A day with logged flow is a period day, also after day 5 (blind test L3).
+  if (cycleDay && (flowLogged || cycleDay <= 5)) {
     return {
       tone: 'period',
       eyebrow: 'Period:',
@@ -101,7 +98,7 @@ function phaseFor(
     return {
       tone: 'fertile',
       eyebrow: 'Estimated fertile window',
-      title: `Ovulation in ${daysToOvulation} ${daysToOvulation === 1 ? 'day' : 'days'}`,
+      title: `Estimated ovulation in about ${daysToOvulation} ${daysToOvulation === 1 ? 'day' : 'days'}`,
       body: 'Logging discharge, ovulation tests, and temperature can add useful context.',
     }
   }
@@ -243,11 +240,9 @@ export function Today() {
   })
 
   const data = useLiveQuery(async () => {
-    const [periodStarts, ovulations, profile, legacyPregnancyLmp, historyLogs, selectedLog] =
+    const [source, legacyPregnancyLmp, historyLogs, selectedLog] =
       await Promise.all([
-        getPeriodStarts(),
-        getOvulations(),
-        getHealthProfile(),
+        readForecastSource(),
         getSetting(SK.pregnancyLMP),
         db.dailyLogs
           .where('date')
@@ -255,33 +250,14 @@ export function Today() {
           .toArray(),
         db.dailyLogs.get(selectedDate),
       ])
-    const forecastPeriodStarts = periodStarts.filter((date) => date <= selectedDate)
-    const forecastOvulations = ovulations.filter((date) => date <= selectedDate)
+    const { profile } = source
+    const forecastPeriodStarts = source.periodStarts.filter((date) => date <= selectedDate)
     const recentLogs = historyLogs.filter(
       (log) => log.date >= addDays(selectedDate, -27),
     )
-    const forecast = buildCycleForecast(
-      {
-        periodStarts: forecastPeriodStarts,
-        ovulations: forecastOvulations,
-        today: selectedDate,
-      },
-      {
-        baselineCycleLength: profile.cycle.typicalCycleLength,
-        positiveOpkDates: recentLogs
-          .filter((log) => log.opk === 'positive' && log.date <= selectedDate)
-          .map((log) => log.date),
-        bbtShiftDates: forecastOvulations,
-      },
-    )
-    const rawPrediction = forecast.prediction
-    const personalized = applyPredictionContext(rawPrediction, profile, {
-      completedCycles: forecast.diagnostics.completedCycleCount,
-      bbtShiftEstimateCount: forecastOvulations.length,
-      positiveOpkThisCycle: forecast.diagnostics.evidence.some(
-        (item) => item.kind === 'opk-suggestive',
-      ),
-    })
+    // The same forecast and cache as the Calendar (lib/sharedForecast.ts, blind test round 2, M3).
+    const forecast = forecastOn(source, selectedDate)
+    const personalized = forecast.predictionContext
     const pregnancyLmp = profile.reproductive.pregnancyLmp ?? legacyPregnancyLmp
     const pregnancyDating =
       (profile.reproductive.pregnancyDating
@@ -347,7 +323,7 @@ export function Today() {
       const daysToOvulation = data.prediction.ovulationDate
         ? daysBetween(selectedDate, data.prediction.ovulationDate)
         : null
-      const inPeriod = cycleDay != null && cycleDay <= 5
+      const inPeriod = cycleDay != null && (cycleDay <= 5 || Boolean(data.selectedLog?.flow))
       const ovulationToday = daysToOvulation === 0
       snapshot = {
         generatedAt: new Date().toISOString(),
@@ -361,7 +337,7 @@ export function Today() {
         detail: ovulationToday
           ? `Calendar estimate · about ±${data.prediction.uncertaintyDays} days`
           : nextPeriodDate
-            ? `Next period estimate · ${nextPeriodDate}`
+            ? `Next period estimate · ${formatRange(nextPeriodDate, nextPeriodDate, today)}`
             : 'Log a period date to update your private summary.',
         cycleDay: cycleDay ?? undefined,
         phase: inPeriod
@@ -433,7 +409,7 @@ export function Today() {
               className="phase-detail-link"
               onClick={() => setPregnancyDetailOpen(true)}
             >
-              Due {pregnancy.estimatedDueDate}
+              Due {formatRange(pregnancy.estimatedDueDate, pregnancy.estimatedDueDate, today)}
               <span aria-hidden="true">›</span>
             </button>
           </section>
@@ -548,7 +524,7 @@ export function Today() {
           <button className="card phase-reading-card" onClick={() => setPregnancyDetailOpen(true)}>
             <div className="section-label">What to expect at {pregnancy.week} weeks</div>
             <p>{PREGNANCY_WEEKS[pregnancy.week] ?? 'Growing steadily, one quiet day at a time.'}</p>
-            <span>Open the week guide <b aria-hidden="true">↗</b></span>
+            <span>Open the week guide <b aria-hidden="true"><ArrowIcon /></b></span>
           </button>
         )}
         <Disclaimer />
@@ -579,6 +555,7 @@ export function Today() {
     daysToOvulation,
     data.prediction.uncertaintyDays,
     stale,
+    Boolean(data.selectedLog?.flow),
   )
   // A negative countdown means the estimate has passed. Saying "in 0 days"
   // reads as "today"; the honest phrasing is how far past the estimate we are.
@@ -592,7 +569,7 @@ export function Today() {
           : `Estimated period was ${-rawDaysUntil} day${rawDaysUntil === -1 ? '' : 's'} ago`
   const estimate =
     data.goal === 'ttc' && daysToOvulation != null && daysToOvulation >= 0
-      ? `Ovulation estimated in ${daysToOvulation} day${daysToOvulation === 1 ? '' : 's'}`
+      ? `Estimated ovulation in about ${daysToOvulation} day${daysToOvulation === 1 ? '' : 's'}`
       : periodEstimate
   const fertileWindow = data.prediction.fertileWindow
   const insideEstimatedFertileWindow = Boolean(
@@ -657,7 +634,8 @@ export function Today() {
   const cyclePositionInsight: DailyInsight = {
     key: 'cycle-position',
     eyebrow:
-      data.prediction.cycleDay != null && data.prediction.cycleDay <= 5
+      data.prediction.cycleDay != null &&
+      (data.prediction.cycleDay <= 5 || Boolean(data.selectedLog?.flow))
         ? 'Period position'
         : 'Cycle position',
     value:
@@ -849,8 +827,8 @@ export function Today() {
           <em>{data.predictionContext.reasons[0]?.message}</em>
           {data.forecastDiagnostics.periodWindow && (
             <span className="prediction-basis-window">
-              Current estimated range {data.forecastDiagnostics.periodWindow.start}–
-              {data.forecastDiagnostics.periodWindow.end}
+              Current estimated range{' '}
+              {formatRange(data.forecastDiagnostics.periodWindow.start, data.forecastDiagnostics.periodWindow.end, today)}
             </span>
           )}
         </span>
@@ -905,7 +883,7 @@ export function Today() {
               ? 'Track changes month to month without turning a pattern into a diagnosis.'
               : 'Learn what may be changing — and what can vary from person to person.'}
         </p>
-        <span>Explore the guide <b aria-hidden="true">↗</b></span>
+        <span>Explore the guide <b aria-hidden="true"><ArrowIcon /></b></span>
       </button>
 
       <Disclaimer />
@@ -967,7 +945,8 @@ function Header({
 function Disclaimer() {
   return (
     <p className="disclaimer">
-      Lunara is not a medical device. Predictions are estimates and are not contraception.
+      Lunara is not a medical device. Predictions are estimates and are not contraception.{' '}
+      <strong>This app does not give medical advice. Check with a doctor.</strong>
     </p>
   )
 }

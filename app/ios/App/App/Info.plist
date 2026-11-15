@@ -21,8 +21,8 @@
 	<string>Use Face ID to unlock your private Lunara data.</string>
 	<key>NSHealthShareUsageDescription</key>
 	<string>Lunara imports only the health categories you choose so your cycle history can stay current on this device.</string>
-	<key>NSLocalNetworkUsageDescription</key>
-	<string>Lunara connects to a local AI service, such as Ollama, only when you configure one.</string>
+	<key>NSHealthUpdateUsageDescription</key>
+	<string>Lunara never writes to Apple Health. It only reads the health categories you choose, so your cycle history stays current on this device.</string>
 	<key>CAPACITOR_DEBUG</key>
 	<string>$(CAPACITOR_DEBUG)</string>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
@@ -32,7 +32,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-        <string>Lunara</string>
+	<string>$(APP_DISPLAY_NAME)</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -72,7 +72,7 @@
 	<string>Main</string>
 	<key>UIRequiredDeviceCapabilities</key>
 	<array>
-		<string>armv7</string>
+		<string>arm64</string>
 	</array>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
@@ -89,5 +89,7 @@
 	</array>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<true/>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 </dict>
 </plist>

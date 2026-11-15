@@ -1,4 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk'
+import type { AiPayload } from './aiPayload'
+import { isAppStoreBuild } from './buildFlags'
 import { providerFetch } from './providerFetch'
 import {
   DEFAULT_PUBLIK_ENDPOINT,
@@ -12,25 +14,21 @@ import {
 } from './publikApi'
 
 /**
- * Consent-scoped, bring-your-own-provider assistant transport.
+ * The AI transport: publik API and the bring-your-own-key providers.
  *
- * No health data is loaded here. Callers must build `approvedContext`
- * explicitly from the toggles the user selected for the current request.
+ * It sends an AiPayload (lib/aiPayload.ts) as it is and takes nothing else, so
+ * every request is the anonymized payload. The only other value it sends is
+ * the credential: the publik install key (billing) or the person's own key.
  */
-export const ASSISTANT_SYSTEM_PROMPT = `You are Lunara's health companion inside a privacy-first menstrual-health app. Explain cycles, fertility, pregnancy, symptoms, and perimenopause clearly and warmly.
-
-Safety rules:
-- You provide general education, not a diagnosis, prescription, or substitute for a clinician.
-- Use calibrated language such as "may", "often", and "can"; never claim clinical certainty from tracker data.
-- Never present calendar, temperature, or symptom tracking as reliable contraception.
-- Do not tell someone to start, stop, or change prescription medicine.
-- When symptoms could be urgent (including severe or one-sided pain, fainting, chest pain, trouble breathing, very heavy bleeding, pregnancy bleeding with pain, or thoughts of self-harm), clearly recommend prompt professional or emergency help.
-- State when the available information is insufficient.
-- Keep answers focused and readable.`
-
 export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
+  /**
+   * An answer only: the local day it arrived, so its [[day:+N]] placeholders show the
+   * same dates later (lib/answerDates.ts). It stays on the phone: makeAiPayload sends
+   * only role and content.
+   */
+  asOf?: string
 }
 
 /**
@@ -55,8 +53,45 @@ export type VendorProvider = Exclude<AssistantProvider, 'publik'>
 export type AnthropicCredentialKind = 'api-key' | 'cli-token'
 
 export const ANTHROPIC_OAUTH_BETA = 'oauth-2025-04-20'
+
+/**
+ * APP_STORE_BUILD=1 (lib/buildFlags.ts) removes the Claude subscription-token
+ * option: Anthropic does not let third-party apps use Claude plan credentials.
+ * Anthropic and OpenAI API keys work in every build.
+ */
+export function claudeSubscriptionTokensAllowed(): boolean {
+  return !isAppStoreBuild()
+}
+
+/** The Anthropic credential this build accepts: a console API key, plus a `claude setup-token` token outside App Store builds. */
+export function acceptedAnthropicCredential(key: string): AnthropicCredentialKind | null {
+  const kind = anthropicCredentialKind(key)
+  return kind === 'cli-token' && !claudeSubscriptionTokensAllowed() ? null : kind
+}
+
+/** What to ask for when no Anthropic credential is saved. */
+export function anthropicCredentialHint(): string {
+  return claudeSubscriptionTokensAllowed()
+    ? 'Add an Anthropic API key, or paste a token from `claude setup-token`.'
+    : 'Add an Anthropic API key (sk-ant-api…).'
+}
+/**
+ * Why a pasted key cannot go in the OpenAI slot, or null when it can. An
+ * Anthropic credential (sk-ant-…) is never sent to OpenAI or to a custom
+ * OpenAI-compatible service.
+ */
+export function openAiKeyProblem(key: string): string | null {
+  const trimmed = key.trim()
+  if (trimmed.startsWith('sk-ant-')) return 'This is an Anthropic credential. Choose Anthropic for it, not OpenAI.'
+  if (!trimmed.startsWith('sk-')) return 'That does not look like an OpenAI API key.'
+  return null
+}
+
 export const CLI_TOKEN_PREFIX = 'sk-ant-oat'
 export const ANTHROPIC_API_KEY_PREFIX = 'sk-ant-api'
+
+/** The note under the AI chat composer (App Store rule 1.2: AI content). */
+export const AI_ANSWER_NOTE = 'AI answers can be wrong. They are not medical advice, diagnosis or emergency care.'
 
 export interface AssistantConfig {
   provider: AssistantProvider
@@ -74,8 +109,6 @@ export interface AssistantReply {
   /** Set on the publik provider: the x-publik-* headers of this call. */
   publik?: PublikUsage
 }
-
-export type ApprovedAssistantContext = Record<string, unknown>
 
 export const DEFAULT_ANTHROPIC_MODEL = 'claude-opus-5'
 export const DEFAULT_OPENAI_MODEL = 'gpt-5.6-terra'
@@ -100,23 +133,14 @@ function cleanBaseUrl(url: string): string {
   return url.trim().replace(/\/+$/, '')
 }
 
-function contextInstructions(approvedContext?: ApprovedAssistantContext): string {
-  if (!approvedContext || Object.keys(approvedContext).length === 0) {
-    return `${ASSISTANT_SYSTEM_PROMPT}\n\nThe user has not shared tracker data for this request. Do not imply that you can see it.`
-  }
-
-  return `${ASSISTANT_SYSTEM_PROMPT}
-
-The following JSON contains only tracker categories the user explicitly approved for this request. Treat it as self-reported, potentially incomplete data. Do not infer or request hidden categories:
-${JSON.stringify(approvedContext)}`
-}
-
 function apiError(provider: VendorProvider, status: number): Error {
   if (status === 401 || status === 403) {
     return new Error(
       provider === 'openai'
         ? 'OpenAI rejected that key. Add a fresh project key in AI settings.'
-        : 'Anthropic rejected that credential. A CLI token from `claude setup-token` expires — generate a new one, or paste a console API key.',
+        : claudeSubscriptionTokensAllowed()
+          ? 'Anthropic rejected that credential. A CLI token from `claude setup-token` expires — generate a new one, or paste a console API key.'
+          : 'Anthropic rejected that API key. Add a fresh key in AI settings.',
     )
   }
   if (status === 402) return new Error('That account has no available credits.')
@@ -124,29 +148,26 @@ function apiError(provider: VendorProvider, status: number): Error {
   return new Error(`Assistant request failed (${status}). Check the provider and model settings.`)
 }
 
-function boundedHistory(history: ChatMessage[]): ChatMessage[] {
-  return history.slice(-16).map((message) => ({
-    role: message.role,
-    content:
-      message.content.length > 6_000
-        ? `${message.content.slice(0, 6_000)}\n[message truncated]`
-        : message.content,
-  }))
-}
-
 async function askAnthropic(
   config: AssistantConfig,
-  history: ChatMessage[],
-  approvedContext: ApprovedAssistantContext | undefined,
+  payload: AiPayload,
   fetchImpl: FetchLike,
 ): Promise<string> {
   const credential = config.apiKey?.trim()
   if (!credential) {
-    throw new Error('Add an Anthropic key or a `claude setup-token` CLI token before sending a message.')
+    throw new Error(
+      claudeSubscriptionTokensAllowed()
+        ? 'Add an Anthropic key or a `claude setup-token` CLI token before sending a message.'
+        : 'Add an Anthropic API key before sending a message.',
+    )
   }
   const kind = anthropicCredentialKind(credential)
   if (kind === null) {
     throw new Error('That does not look like an Anthropic credential (expected sk-ant-…).')
+  }
+  if (kind === 'cli-token' && !claudeSubscriptionTokensAllowed()) {
+    // A token saved by an earlier build is never sent from an App Store build.
+    throw new Error('This version of Lunara takes Anthropic API keys only (sk-ant-api…). Add one in AI settings.')
   }
 
   // A CLI token is an OAuth credential: Bearer header plus the OAuth beta.
@@ -157,9 +178,9 @@ async function askAnthropic(
       ? { authToken: credential, defaultHeaders: { 'anthropic-beta': ANTHROPIC_OAUTH_BETA } }
       : { apiKey: credential }),
     fetch: fetchImpl,
-    // The credential is the user's own, entered on their device, and is never
-    // sent anywhere but Anthropic. There is no server to proxy through in a
-    // local-first app.
+    // The credential is the user's own, entered on their phone, and is never
+    // sent anywhere but Anthropic. The call goes straight from the phone to
+    // Anthropic: publik never sees it.
     dangerouslyAllowBrowser: true,
     maxRetries: 1,
   })
@@ -169,8 +190,8 @@ async function askAnthropic(
     response = await client.messages.create({
       model: config.model || DEFAULT_ANTHROPIC_MODEL,
       max_tokens: 1200,
-      system: contextInstructions(approvedContext),
-      messages: boundedHistory(history),
+      system: payload.system,
+      messages: payload.messages.map((message) => ({ role: message.role, content: message.content })),
     })
   } catch (reason) {
     if (reason instanceof Anthropic.APIError && typeof reason.status === 'number') {
@@ -222,8 +243,7 @@ function extractOpenAIText(payload: unknown): string {
  */
 async function askResponses(
   config: AssistantConfig,
-  history: ChatMessage[],
-  approvedContext: ApprovedAssistantContext | undefined,
+  payload: AiPayload,
   fetchImpl: FetchLike,
 ): Promise<AssistantReply> {
   const publik = config.provider === 'publik'
@@ -233,6 +253,7 @@ async function askResponses(
       ? new PublikApiError('disconnected', 'publik API is not connected on this phone. Connect it in AI settings, or use your own key.')
       : new Error('Add an OpenAI API key before sending a message.')
   }
+  if (!publik && key.startsWith('sk-ant-')) throw new Error(openAiKeyProblem(key) ?? 'This key is not for OpenAI.')
   const endpoint = publik
     ? `${(config.publik ?? DEFAULT_PUBLIK_ENDPOINT).baseUrl}/responses`
     : `${cleanBaseUrl(config.baseUrl || 'https://api.openai.com')}/v1/responses`
@@ -250,8 +271,8 @@ async function askResponses(
       },
       body: JSON.stringify({
         model,
-        instructions: contextInstructions(approvedContext),
-        input: boundedHistory(history).map((message) => ({
+        instructions: payload.system,
+        input: payload.messages.map((message) => ({
           role: message.role,
           content: message.content,
         })),
@@ -281,23 +302,21 @@ async function askResponses(
 
 export async function askAssistantDetailed(
   config: AssistantConfig,
-  history: ChatMessage[],
-  approvedContext?: ApprovedAssistantContext,
+  payload: AiPayload,
   fetchImpl: FetchLike = providerFetch,
 ): Promise<AssistantReply> {
-  if (history.length === 0) throw new Error('Write a message first.')
+  if (payload.messages.length === 0) throw new Error('Write a message first.')
   if (config.provider === 'anthropic') {
-    return { text: await askAnthropic(config, history, approvedContext, fetchImpl) }
+    return { text: await askAnthropic(config, payload, fetchImpl) }
   }
-  return askResponses(config, history, approvedContext, fetchImpl)
+  return askResponses(config, payload, fetchImpl)
 }
 
 /** Unchanged signature for existing callers and tests. */
 export async function askAssistant(
   config: AssistantConfig,
-  history: ChatMessage[],
-  approvedContext?: ApprovedAssistantContext,
+  payload: AiPayload,
   fetchImpl: FetchLike = providerFetch,
 ): Promise<string> {
-  return (await askAssistantDetailed(config, history, approvedContext, fetchImpl)).text
+  return (await askAssistantDetailed(config, payload, fetchImpl)).text
 }

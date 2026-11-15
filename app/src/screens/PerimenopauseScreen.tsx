@@ -14,6 +14,7 @@ import {
 } from '../engine/perimenopause'
 import { formatShort, localToday } from '../lib/dates'
 import { useApp } from '../state/appStore'
+import { ArrowIcon } from '../components/ArrowIcon'
 import '../styles/health.css'
 
 export interface PerimenopauseScreenProps {
@@ -133,7 +134,7 @@ export function PerimenopauseScreen({ onBack }: PerimenopauseScreenProps) {
                     : 'Add symptoms on a few days to create a personal, descriptive baseline.'}
                 </p>
                 <p className="peri-result-trend">
-                  <span aria-hidden="true">↗</span>
+                  <span aria-hidden="true"><ArrowIcon /></span>
                   {trendLabel(data.summary.trend)}
                 </p>
                 <button

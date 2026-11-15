@@ -1,16 +1,29 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  AI_ANSWER_NOTE,
+  acceptedAnthropicCredential,
+  anthropicCredentialHint,
   anthropicCredentialKind,
   ANTHROPIC_OAUTH_BETA,
   askAssistant,
   askAssistantDetailed,
   DEFAULT_ANTHROPIC_MODEL,
   DEFAULT_OPENAI_MODEL,
+  openAiKeyProblem,
   type ChatMessage,
 } from './assistant'
+import { makeAiPayload } from './aiPayload'
+import { NO_ASSISTANT_CONSENT } from './assistantContext'
 import { PublikApiError } from './publikApi'
 
 const history: ChatMessage[] = [{ role: 'user', content: 'Why might cycle length vary?' }]
+// Every request is an anonymized payload (lib/aiPayload.ts).
+const plain = makeAiPayload({ messages: history, consent: NO_ASSISTANT_CONSENT, tracker: null })
+const withCycle = makeAiPayload({
+  messages: history,
+  consent: { cycle: true, symptoms: false, fertility: false },
+  tracker: { logs: [], periodStarts: ['2026-07-15'], ovulations: [], goal: 'cycle', today: '2026-07-26' },
+})
 
 function headerOf(init: RequestInit | undefined, name: string): string | null {
   return new Headers(init?.headers).get(name)
@@ -50,8 +63,7 @@ describe('assistant transport', () => {
 
     const result = await askAssistant(
       { provider: 'anthropic', apiKey: 'sk-ant-api03-key', model: DEFAULT_ANTHROPIC_MODEL },
-      history,
-      { cycle: { cycleDay: 12 } },
+      withCycle,
       fetchMock,
     )
 
@@ -62,7 +74,7 @@ describe('assistant transport', () => {
     expect(headerOf(captured, 'anthropic-version')).toBe('2023-06-01')
     const body = JSON.parse(String(captured?.body))
     expect(body.model).toBe(DEFAULT_ANTHROPIC_MODEL)
-    expect(body.system).toContain('"cycle":{"cycleDay":12}')
+    expect(body.system).toContain('"cycleDay":12')
     expect(body.messages).toEqual(history)
   })
 
@@ -77,8 +89,7 @@ describe('assistant transport', () => {
 
     const result = await askAssistant(
       { provider: 'anthropic', apiKey: 'sk-ant-oat01-token', model: DEFAULT_ANTHROPIC_MODEL },
-      history,
-      {},
+      plain,
       fetchMock,
     )
 
@@ -99,8 +110,7 @@ describe('assistant transport', () => {
 
     await askAssistant(
       { provider: 'anthropic', apiKey: 'sk-ant-api03-key', model: DEFAULT_ANTHROPIC_MODEL },
-      history,
-      {},
+      plain,
       fetchMock,
     )
   })
@@ -126,8 +136,7 @@ describe('assistant transport', () => {
     await expect(
       askAssistant(
         { provider: 'anthropic', apiKey: 'sk-ant-api03-key', model: DEFAULT_ANTHROPIC_MODEL },
-        history,
-        {},
+        plain,
         fetchMock,
       ),
     ).rejects.toThrow(/safety system declined/)
@@ -144,8 +153,7 @@ describe('assistant transport', () => {
     await expect(
       askAssistant(
         { provider: 'anthropic', apiKey: 'sk-ant-oat01-token', model: DEFAULT_ANTHROPIC_MODEL },
-        history,
-        {},
+        plain,
         fetchMock,
       ),
     ).rejects.toThrow(/claude setup-token/)
@@ -157,8 +165,7 @@ describe('assistant transport', () => {
     await expect(
       askAssistant(
         { provider: 'anthropic', apiKey: 'sk-proj-openai', model: DEFAULT_ANTHROPIC_MODEL },
-        history,
-        {},
+        plain,
         fetchMock,
       ),
     ).rejects.toThrow(/does not look like an Anthropic credential/)
@@ -186,8 +193,7 @@ describe('assistant transport', () => {
 
     const result = await askAssistant(
       { provider: 'openai', apiKey: 'test-key', model: DEFAULT_OPENAI_MODEL },
-      history,
-      { cycle: { cycleDay: 12 } },
+      withCycle,
       fetchMock,
     )
 
@@ -197,7 +203,7 @@ describe('assistant transport', () => {
     const body = JSON.parse(String(capturedInit?.body))
     expect(body.store).toBe(false)
     expect(body.input).toEqual(history)
-    expect(body.instructions).toContain('"cycle":{"cycleDay":12}')
+    expect(body.instructions).toContain('"cycleDay":12')
   })
 
   it('never includes provider error bodies in user-facing errors', async () => {
@@ -208,8 +214,7 @@ describe('assistant transport', () => {
     await expect(
       askAssistant(
         { provider: 'openai', apiKey: 'test-key', model: DEFAULT_OPENAI_MODEL },
-        history,
-        undefined,
+        plain,
         fetchMock,
       ),
     ).rejects.toThrow('Assistant request failed (500). Check the provider and model settings.')
@@ -229,8 +234,7 @@ describe('assistant transport', () => {
 
     const reply = await askAssistantDetailed(
       { provider: 'publik', apiKey: 'pk_live_test', model: '' },
-      history,
-      { cycle: { cycleDay: 12 } },
+      withCycle,
       fetchMock,
     )
 
@@ -263,8 +267,7 @@ describe('assistant transport', () => {
         baseUrl: 'https://user-override.example',
         publik: { baseUrl: 'https://preview.publikhq.com/api/v1', models: { fast: 'publik-fast-v2', balanced: 'publik-balanced', smart: 'publik-smart' } },
       },
-      history,
-      undefined,
+      plain,
       fetchMock,
     )
     expect(capturedUrl).toBe('https://preview.publikhq.com/api/v1/responses')
@@ -287,31 +290,98 @@ describe('assistant transport', () => {
         { status: 402, headers: { 'content-type': 'application/json' } },
       ),
     )
-    const failure = await askAssistant({ provider: 'publik', apiKey: 'pk_live_test', model: 'publik-balanced' }, history, undefined, fetchMock).catch((e: unknown) => e)
+    const failure = await askAssistant({ provider: 'publik', apiKey: 'pk_live_test', model: 'publik-balanced' }, plain, fetchMock).catch((e: unknown) => e)
     expect(failure).toBeInstanceOf(PublikApiError)
     const error = failure as PublikApiError
     expect(error.kind).toBe('needs_credit')
     expect(error.link).toBe('https://publikhq.com/claim/HK7F-2QWD')
-    expect(error.message).toContain('pick a plan')
+    // The app's own words, never the server's (a server text could name an amount of money).
+    expect(error.message).toBe('This phone is not linked to a publik plan yet. Link it at the link below, or use your own key.')
   })
 
   it('a fetch that throws on publik becomes unreachable; on openai the original error propagates', async () => {
     const fetchMock = vi.fn(async () => {
       throw new Error('Could not reach the AI provider. Check your network connection.')
     })
-    const publikFailure = await askAssistant({ provider: 'publik', apiKey: 'pk_live_test', model: '' }, history, undefined, fetchMock).catch((e: unknown) => e)
+    const publikFailure = await askAssistant({ provider: 'publik', apiKey: 'pk_live_test', model: '' }, plain, fetchMock).catch((e: unknown) => e)
     expect(publikFailure).toBeInstanceOf(PublikApiError)
     expect((publikFailure as PublikApiError).kind).toBe('unreachable')
     await expect(
-      askAssistant({ provider: 'openai', apiKey: 'test-key', model: DEFAULT_OPENAI_MODEL }, history, undefined, fetchMock),
+      askAssistant({ provider: 'openai', apiKey: 'test-key', model: DEFAULT_OPENAI_MODEL }, plain, fetchMock),
     ).rejects.toThrow('Could not reach the AI provider. Check your network connection.')
   })
 
   it('refuses to send on publik without a key and never fetches', async () => {
     const fetchMock = vi.fn(async () => new Response('{}', { status: 200 }))
-    const failure = await askAssistant({ provider: 'publik', model: '' }, history, undefined, fetchMock).catch((e: unknown) => e)
+    const failure = await askAssistant({ provider: 'publik', model: '' }, plain, fetchMock).catch((e: unknown) => e)
     expect(failure).toBeInstanceOf(PublikApiError)
     expect((failure as PublikApiError).kind).toBe('disconnected')
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('APP_STORE_BUILD: no Claude subscription token', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  it('off (today): a `claude setup-token` token is accepted next to API keys', () => {
+    expect(acceptedAnthropicCredential('sk-ant-oat01-token')).toBe('cli-token')
+    expect(acceptedAnthropicCredential('sk-ant-api03-key')).toBe('api-key')
+    expect(anthropicCredentialHint()).toContain('claude setup-token')
+  })
+
+  it('on: the token is refused before any request; API keys (Anthropic, OpenAI) still work', async () => {
+    vi.stubEnv('APP_STORE_BUILD', '1')
+    expect(acceptedAnthropicCredential('sk-ant-oat01-token')).toBeNull()
+    expect(acceptedAnthropicCredential('sk-ant-api03-key')).toBe('api-key')
+    expect(anthropicCredentialHint()).not.toContain('setup-token')
+
+    const never = vi.fn(async () => anthropicReply('should not be reached'))
+    await expect(
+      askAssistant({ provider: 'anthropic', apiKey: 'sk-ant-oat01-token', model: DEFAULT_ANTHROPIC_MODEL }, plain, never),
+    ).rejects.toThrow(/API keys only/)
+    expect(never).not.toHaveBeenCalled()
+
+    const keyed = vi.fn(async () => anthropicReply('An API-key answer.'))
+    await expect(
+      askAssistant({ provider: 'anthropic', apiKey: 'sk-ant-api03-key', model: DEFAULT_ANTHROPIC_MODEL }, plain, keyed),
+    ).resolves.toBe('An API-key answer.')
+
+    const openai = vi.fn(async () =>
+      new Response(JSON.stringify({ output: [{ type: 'message', content: [{ type: 'output_text', text: 'An OpenAI answer.' }] }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+    await expect(
+      askAssistant({ provider: 'openai', apiKey: 'sk-proj-key', model: DEFAULT_OPENAI_MODEL }, plain, openai),
+    ).resolves.toBe('An OpenAI answer.')
+  })
+})
+
+describe('the OpenAI slot never takes an Anthropic credential', () => {
+  it('names the problem for sk-ant- keys and tokens, and for keys that are not OpenAI keys', () => {
+    expect(openAiKeyProblem('sk-proj-abc')).toBeNull()
+    expect(openAiKeyProblem(' sk-abc ')).toBeNull()
+    expect(openAiKeyProblem('sk-ant-api03-key')).toMatch(/Anthropic credential/)
+    expect(openAiKeyProblem('sk-ant-oat01-token')).toMatch(/Anthropic credential/)
+    expect(openAiKeyProblem('pk_live_x')).toMatch(/does not look like an OpenAI API key/)
+  })
+
+  it('an sk-ant- key saved in the OpenAI slot is never sent, to OpenAI or to a custom service', async () => {
+    const never = vi.fn(async () => new Response('{}', { status: 200 }))
+    for (const baseUrl of [undefined, 'https://llm.example.org']) {
+      await expect(
+        askAssistant({ provider: 'openai', apiKey: 'sk-ant-api03-key', model: DEFAULT_OPENAI_MODEL, baseUrl }, plain, never),
+      ).rejects.toThrow(/Anthropic credential/)
+    }
+    expect(never).not.toHaveBeenCalled()
+  })
+})
+
+describe('the AI chat note (App Store rule 1.2)', () => {
+  it('says that answers can be wrong and are not medical advice', () => {
+    expect(AI_ANSWER_NOTE).toBe('AI answers can be wrong. They are not medical advice, diagnosis or emergency care.')
   })
 })

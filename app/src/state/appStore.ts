@@ -16,6 +16,13 @@ interface AppState {
   setCalendarOpen: (open: boolean) => void
   assistantOpen: boolean
   setAssistantOpen: (open: boolean) => void
+  /**
+   * "Use my own AI key" on the gate's plan screen (blind test round 2, M2): Lunara AI
+   * opens on the key entry. Nothing is saved until the person saves a key.
+   */
+  aiKeyEntry: boolean
+  openAiKeyEntry: () => void
+  setAiKeyEntry: (open: boolean) => void
   reportOpen: boolean
   setReportOpen: (open: boolean) => void
   cycleReportOpen: boolean
@@ -45,6 +52,9 @@ export const useApp = create<AppState>((set) => ({
   setCalendarOpen: (calendarOpen) => set({ calendarOpen }),
   assistantOpen: false,
   setAssistantOpen: (assistantOpen) => set({ assistantOpen }),
+  aiKeyEntry: false,
+  openAiKeyEntry: () => set({ assistantOpen: true, aiKeyEntry: true }),
+  setAiKeyEntry: (aiKeyEntry) => set({ aiKeyEntry }),
   reportOpen: false,
   setReportOpen: (reportOpen) => set({ reportOpen }),
   cycleReportOpen: false,

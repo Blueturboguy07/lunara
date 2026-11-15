@@ -11,7 +11,7 @@
   --ink-900: #38292f;
   --ink-800: #4e3b42;
   --ink-650: #6f5a62;
-  --ink-500: #8e7980;
+  --ink-500: #776269; /* 4.6:1 or more on every paper colour (blind test L9; was #8e7980, 3.6:1) */
   --ink-300: #b9a9ad;
 
   --paper-50: #fffdf9;

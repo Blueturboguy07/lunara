@@ -54,7 +54,7 @@
 
 .page.onboarding .ob-health-import-button {
   grid-column: 1 / -1;
-  min-height: 42px;
+  min-height: 44px;
   padding: 0 16px;
   color: white;
   font: 700 11px/1 var(--font-sans);

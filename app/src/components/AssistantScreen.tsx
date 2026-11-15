@@ -2,75 +2,99 @@ import { Browser } from '@capacitor/browser'
 import { useEffect, useRef, useState } from 'react'
 import { getSetting, removeSetting, setSetting, SK } from '../db/schema'
 import {
+  AI_ANSWER_NOTE,
+  acceptedAnthropicCredential,
+  anthropicCredentialHint,
   anthropicCredentialKind,
   ANTHROPIC_MODELS,
   askAssistantDetailed,
+  claudeSubscriptionTokensAllowed,
   CLI_TOKEN_PREFIX,
   DEFAULT_ANTHROPIC_MODEL,
   DEFAULT_OPENAI_MODEL,
+  openAiKeyProblem,
   type AssistantConfig,
   type AssistantProvider,
   type ChatMessage,
 } from '../lib/assistant'
+import { makeAiPayload } from '../lib/aiPayload'
 import {
-  collectApprovedAssistantContext,
+  collectTrackerSnapshot,
   NO_ASSISTANT_CONSENT,
   parseAssistantConsent,
   type AssistantConsent,
 } from '../lib/assistantContext'
 import { screenAssistantUrgency } from '../lib/assistantSafety'
+import { gateMode } from '../lib/buildFlags'
+import { CHAT_NOT_SAVED, chatDestination, historyForSend, NEW_CHAT_NOTICE } from '../lib/chatHistory'
+import {
+  agreeToChat,
+  CHAT_AGREEMENT_ACCEPT,
+  CONSENT_NEEDS_INTERNET,
+  CHAT_AGREEMENT_DECLINE,
+  CHAT_AGREEMENT_TITLE,
+  CHAT_SENDS_EVERY_TIME,
+  CHAT_SENDS_WITH_TICKED,
+  chatAgreementBody,
+  chatAgreementNeeded,
+  HEALTH_KINDS,
+  healthDestination,
+  selectedHealthKinds,
+  type HealthDestination,
+  type HealthKind,
+} from '../lib/healthConsent'
 import {
   DEFAULT_PUBLIK_MODEL,
   disconnectPublik,
-  dollars,
+  cachedAiProviders,
   fetchPublikWallet,
   hasPublikKey,
   markPublikCardSeen,
   provisionPublik,
   PUBLIK_BUILD,
-  PUBLIK_DATA_PATH,
-  PUBLIK_LINK_STARTER_MICROS,
+  publikDataPath,
   PUBLIK_MODELS,
-  PUBLIK_STARTS_AT_ZERO,
-  PUBLIK_WHY_IT_COSTS,
+  PUBLIK_PLAN_SENTENCE,
+  notLinkedText,
+  planLimitText,
+  planUseFrom,
   publikAvailable,
-  publikBalanceLine,
   publikEndpoint,
+  publikErrorLinkLabel,
   publikLinkButtonLabel,
   publikLocalState,
   publikStatusLine,
+  publikSupportUrl,
+  usageFromBalance,
   PublikApiError,
+  REPORT_ANSWER_LABEL,
+  REPORT_ANSWER_NOTE,
+  REPORT_REASONS,
+  activeAiProvider,
+  setChoice,
   type PublikClaimState,
   type PublikEndpoint,
   type PublikUsage,
 } from '../lib/publik'
 import {
   deleteSecureSecret,
-  getSecureSecret,
+  getSecureSecretOrForget,
   SECURE_SECRET_KEYS,
   secureVaultStatus,
   setSecureSecret,
 } from '../native/secureVault'
+import { NO_LINK_PLAN_TEXT } from '../lib/storefront'
+import { guardAnswerDates, renderAnswerDates } from '../lib/answerDates'
+import { localToday } from '../lib/dates'
+import { ChatMarkdown } from './ChatMarkdown'
+import { PlanUseMeter } from './PlanUseMeter'
 import { useApp } from '../state/appStore'
 import { LunaraMark } from './LunaraMark'
+import { usePurchaseLinks } from './usePurchaseLinks'
 import '../styles/assistant.css'
 
-const CONSENT_OPTIONS: Array<{
-  key: keyof AssistantConsent
-  title: string
-  detail: string
-  sensitive?: boolean
-}> = [
-  { key: 'cycle', title: 'Cycle summary', detail: 'Period starts and current prediction' },
-  { key: 'symptoms', title: 'Symptoms & mood', detail: 'Up to 30 recent logged days' },
-  {
-    key: 'fertility',
-    title: 'Fertility & intimacy',
-    detail: 'BBT, tests, discharge, sex, and pregnancy timing',
-    sensitive: true,
-  },
-  { key: 'notes', title: 'Private notes', detail: 'Up to 12 recent notes', sensitive: true },
-]
+// The same words on the agreement screen and under Tracker context: exactly what each category sends.
+const CONSENT_OPTIONS = (Object.keys(HEALTH_KINDS) as HealthKind[]).map((key) => ({ key, ...HEALTH_KINDS[key] }))
 
 const STARTERS = [
   'What can change cycle length?',
@@ -100,16 +124,18 @@ function openPublikLink(url: string) {
   void Browser.open({ url })
 }
 
-/** What the first-run card (CONTRACT §12.1) shows: the real balance plus the justification. */
+/** What the first-run card (CONTRACT §12.1) shows: the plan use (a percent, never money) and how AI is paid for. */
 interface PublikCard {
   balanceMicros: number | null
   claimState: PublikClaimState | null
   claimUrl: string | null
-  costSentence: string
 }
 
 export function AssistantScreen() {
   const setAssistantOpen = useApp((state) => state.setAssistantOpen)
+  // "Use my own AI key" on the gate's plan screen (blind test round 2, M2).
+  const keyEntry = useApp((state) => state.aiKeyEntry)
+  const [focusKey, setFocusKey] = useState(0)
   const [provider, setProvider] = useState<AssistantProvider>('anthropic')
   const [model, setModel] = useState(DEFAULT_ANTHROPIC_MODEL)
   const [baseUrl, setBaseUrl] = useState('')
@@ -118,6 +144,8 @@ export function AssistantScreen() {
   const [consent, setConsent] = useState<AssistantConsent>(NO_ASSISTANT_CONSENT)
   const [vaultLabel, setVaultLabel] = useState('secure storage')
   const [messages, setMessages] = useState<ChatMessage[]>([])
+  // The provider that received `messages` (lib/chatHistory.ts): history never goes to another one.
+  const [chatSentTo, setChatSentTo] = useState<string | null>(null)
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -133,9 +161,21 @@ export function AssistantScreen() {
   const [publikEndpointState, setPublikEndpointState] = useState<PublikEndpoint | null>(null)
   const [claimUrl, setClaimUrl] = useState<string | null>(null)
   const [claimState, setClaimState] = useState<PublikClaimState | null>(null)
-  const [starterMicros, setStarterMicros] = useState<number | null>(null)
-  const [costSentence, setCostSentence] = useState(PUBLIK_WHY_IT_COSTS)
   const [publikCard, setPublikCard] = useState<PublikCard | null>(null)
+  // "AI chat is optional" (lib/healthConsent.ts): nothing goes to a provider before "Turn on AI chat".
+  // `text` is the message that waits for the answer (null: the screen came when AI chat opened).
+  const [chatAsk, setChatAsk] = useState<{ text: string | null; destination: HealthDestination } | null>(null)
+  // "Report this answer" (App Store rule 1.2): the answer whose reason picker is open.
+  const [reportingAnswer, setReportingAnswer] = useState<number | null>(null)
+  // GET /wallet `ai_providers`: the true companies behind publik API, named on the agreement screen.
+  const [aiProviders, setAiProviders] = useState<string[] | null>(null)
+  // Where that list came from: GET /wallet in this session, the copy kept on this phone, or nowhere yet.
+  // Offline with no copy, the publik agreement cannot be accepted: it must name the providers (round 2, M5).
+  const [providersFrom, setProvidersFrom] = useState<'wallet' | 'phone' | 'none'>('none')
+  const [providersChecking, setProvidersChecking] = useState(false)
+  const subscriptionTokens = claudeSubscriptionTokensAllowed()
+  // Purchase links, buttons and prices: US App Store storefront only (lib/storefront.ts).
+  const purchaseLinks = usePurchaseLinks()
   const scroller = useRef<HTMLDivElement>(null)
   const composerInput = useRef<HTMLTextAreaElement>(null)
 
@@ -145,11 +185,19 @@ export function AssistantScreen() {
     try {
       const wallet = await fetchPublikWallet()
       setPublikUsage(wallet)
+      const kept = wallet.aiProviders ?? (await cachedAiProviders())
+      setAiProviders(kept)
+      setProvidersFrom(kept && !wallet.aiProviders ? 'phone' : 'wallet')
       if (wallet.claimState) setClaimState(wallet.claimState)
       if (wallet.claimUrl) setClaimUrl(wallet.claimUrl)
       return wallet
     } catch {
-      // the line stays "Ready"; nothing is charged by a failed read
+      // the line stays "Ready"; nothing is charged by a failed read. Offline: the list kept on this phone.
+      const kept = await cachedAiProviders()
+      if (kept) {
+        setAiProviders((current) => current ?? kept)
+        setProvidersFrom((current) => (current === 'none' ? 'phone' : current))
+      }
       return null
     }
   }
@@ -158,7 +206,6 @@ export function AssistantScreen() {
     let alive = true
     ;(async () => {
       const [
-        savedProvider,
         savedModel,
         savedBaseUrl,
         savedConsent,
@@ -171,29 +218,22 @@ export function AssistantScreen() {
         local,
         endpoint,
       ] = await Promise.all([
-        getSetting(SK.aiProvider),
         getSetting(SK.aiModel),
         getSetting(SK.aiBaseUrl),
         getSetting(SK.aiConsent),
         secureVaultStatus(),
         getSetting(SK.aiKey),
-        getSecureSecret(SECURE_SECRET_KEYS.openAiApiKey),
-        getSecureSecret(SECURE_SECRET_KEYS.anthropicApiKey),
+        getSecureSecretOrForget(SECURE_SECRET_KEYS.openAiApiKey),
+        getSecureSecretOrForget(SECURE_SECRET_KEYS.anthropicApiKey),
         publikAvailable(),
         hasPublikKey(),
         publikLocalState(),
         publikEndpoint(),
       ])
-      const nextProvider: AssistantProvider =
-        savedProvider === 'openai'
-          ? 'openai'
-          : savedProvider === 'anthropic'
-            ? 'anthropic'
-            : savedProvider === 'publik' && available
-              ? 'publik'
-              : available
-                ? 'publik' // fresh install on a publik-capable build: preselected
-                : 'anthropic'
+      // No saved provider yet: the answer to the gate's plan screen decides
+      // (Connect your plan = publik API); with no answer, a publik-capable build preselects publik.
+      // The Settings row shows the same choice (activeAiProvider in lib/publik.ts).
+      const nextProvider: AssistantProvider = await activeAiProvider()
 
       // One-time migration from the old Dexie implementation. Plaintext is
       // removed immediately after the secure bridge accepts it.
@@ -204,7 +244,7 @@ export function AssistantScreen() {
       const key =
         nextProvider === 'publik'
           ? publikKey
-            ? await getSecureSecret(SECURE_SECRET_KEYS.publikApiKey)
+            ? await getSecureSecretOrForget(SECURE_SECRET_KEYS.publikApiKey)
             : null
           : nextProvider === 'anthropic'
             ? savedAnthropicKey
@@ -214,8 +254,6 @@ export function AssistantScreen() {
       setPublikEndpointState(endpoint)
       setClaimUrl(local.claimUrl)
       setClaimState(local.claimState)
-      setStarterMicros(local.starterMicros)
-      if (local.costSentence) setCostSentence(local.costSentence)
       setProvider(nextProvider)
       setModel(savedModel || defaultModel(nextProvider))
       setBaseUrl(savedBaseUrl || '')
@@ -235,7 +273,6 @@ export function AssistantScreen() {
             balanceMicros: local.starterMicros,
             claimState: local.claimState,
             claimUrl: local.claimUrl,
-            costSentence: local.costSentence ?? PUBLIK_WHY_IT_COSTS,
           })
         }
         void refreshWallet().then((wallet) => {
@@ -260,6 +297,55 @@ export function AssistantScreen() {
     scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: 'smooth' })
   }, [messages, busy])
 
+  // "Use my own AI key" (round 2, M2): open the key entry at once. This only shows the
+  // own-key form; no setting and no key changes until the person taps Save with a key.
+  useEffect(() => {
+    if (!keyEntry || loading) return
+    useApp.getState().setAiKeyEntry(false)
+    setPublikCard(null)
+    setSetupOpen(true)
+    void (async () => {
+      if (provider === 'publik') await chooseProvider('anthropic')
+      setFocusKey((n) => n + 1)
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [keyEntry, loading])
+
+  useEffect(() => {
+    if (!focusKey) return
+    const frame = requestAnimationFrame(() => {
+      const field = document.getElementById('assistant-key')
+      field?.scrollIntoView({ block: 'center' })
+      field?.focus()
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [focusKey])
+
+  // The publik agreement opened before publik named its AI providers: ask once (and read the copy on this phone).
+  const providersNeeded = chatAsk?.destination.id === 'publik' && providersFrom === 'none' && aiProviders === null
+  useEffect(() => {
+    if (!providersNeeded) return
+    setProvidersChecking(true)
+    void refreshWallet().finally(() => setProvidersChecking(false))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [providersNeeded])
+
+  // AI chat starts with the agreement screen when this provider has no agreement yet.
+  // send() checks again, so a message typed before this answer still waits for it.
+  useEffect(() => {
+    if (loading || setupOpen || !apiKey) return
+    let alive = true
+    const destination = healthDestination(provider, baseUrl, aiProviders)
+    void chatAgreementNeeded(destination, selectedHealthKinds(consent)).then((needed) => {
+      if (alive && needed) setChatAsk((ask) => ask ?? { text: null, destination })
+    })
+    return () => {
+      alive = false
+    }
+    // Ticks changed in the chat are checked by send(), not here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, setupOpen, apiKey, provider, baseUrl])
+
   useEffect(() => {
     const textarea = composerInput.current
     if (!textarea) return
@@ -275,7 +361,13 @@ export function AssistantScreen() {
     setError(null)
     setNotice(null)
     setPublikError(null)
-    setApiKey(await getSecureSecret(vaultKeyFor(next)))
+    // A new provider starts a new chat: the earlier messages never go to it.
+    setMessages([])
+    setReportingAnswer(null)
+    setChatSentTo(null)
+    // A waiting message was for the earlier provider; the new one gets its own agreement screen.
+    setChatAsk(null)
+    setApiKey(await getSecureSecretOrForget(vaultKeyFor(next)))
   }
 
   /** Consent first: only the "Continue with publik API" tap mints, never a load. */
@@ -285,25 +377,23 @@ export function AssistantScreen() {
     setError(null)
     try {
       const install = await provisionPublik(options)
-      const key = install.key ?? (await getSecureSecret(SECURE_SECRET_KEYS.publikApiKey))
+      const key = install.key ?? (await getSecureSecretOrForget(SECURE_SECRET_KEYS.publikApiKey))
       setApiKey(key)
       setPublikEndpointState(install.endpoint)
       setClaimUrl(install.claimUrl)
       setClaimState(install.claimState)
-      if (install.starterMicros > 0) setStarterMicros(install.starterMicros)
-      if (install.costSentence) setCostSentence(install.costSentence)
       await Promise.all([
         setSetting(SK.aiProvider, 'publik'),
         setSetting(SK.aiModel, PUBLIK_MODELS.some((m) => m.id === model) ? model : DEFAULT_PUBLIK_MODEL),
         setSetting(SK.aiBaseUrl, ''),
         setSetting(SK.publikDisclosureVersion, String(PUBLIK_BUILD.disclosureVersion)),
+        setChoice('publik'),
       ])
       // The first-run card, immediately after POST /installs succeeds (CONTRACT §12.1).
       setPublikCard({
         balanceMicros: install.balanceMicros,
         claimState: install.claimState,
         claimUrl: install.claimUrl,
-        costSentence: install.costSentence ?? PUBLIK_WHY_IT_COSTS,
       })
       return key
     } catch (reason) {
@@ -332,6 +422,7 @@ export function AssistantScreen() {
         setSetting(SK.aiProvider, 'publik'),
         setSetting(SK.aiModel, PUBLIK_MODELS.some((m) => m.id === cleanModel) ? cleanModel : DEFAULT_PUBLIK_MODEL),
         setSetting(SK.aiBaseUrl, ''),
+        setChoice('publik'),
       ])
       setModel(cleanModel)
       setSetupOpen(false)
@@ -340,13 +431,28 @@ export function AssistantScreen() {
     }
     try {
       const suppliedKey = keyInput.trim()
+      // No key: nothing is saved (round 2, M2). The provider, the model and the
+      // plan-screen answer change only together with a key.
+      if (!apiKey && !suppliedKey) {
+        setError(
+          provider === 'anthropic'
+            ? anthropicCredentialHint()
+            : 'Add an OpenAI project key, or choose another provider.',
+        )
+        return
+      }
       if (suppliedKey) {
-        if (provider === 'anthropic' && anthropicCredentialKind(suppliedKey) === null) {
-          setError('Anthropic credentials start with sk-ant- (an API key or a `claude setup-token` token).')
+        if (provider === 'anthropic' && acceptedAnthropicCredential(suppliedKey) === null) {
+          setError(
+            subscriptionTokens
+              ? 'Anthropic credentials start with sk-ant- (an API key or a `claude setup-token` token).'
+              : 'Paste an Anthropic API key (sk-ant-api…). This version does not take Claude subscription tokens.',
+          )
           return
         }
-        if (provider === 'openai' && !suppliedKey.startsWith('sk-')) {
-          setError('That does not look like an OpenAI API key.')
+        const openAiProblem = provider === 'openai' ? openAiKeyProblem(suppliedKey) : null
+        if (openAiProblem) {
+          setError(openAiProblem)
           return
         }
         await setSecureSecret(vaultKeyFor(provider), suppliedKey)
@@ -357,16 +463,10 @@ export function AssistantScreen() {
         setSetting(SK.aiProvider, provider),
         setSetting(SK.aiModel, cleanModel),
         setSetting(SK.aiBaseUrl, baseUrl.trim()),
+        // The same answer as "Use my own key" on the gate's plan screen.
+        setChoice('own_key'),
       ])
       setModel(cleanModel)
-      if (!apiKey && !suppliedKey) {
-        setError(
-          provider === 'anthropic'
-            ? 'Add an Anthropic API key, or paste a token from `claude setup-token`.'
-            : 'Add an OpenAI project key, or choose another provider.',
-        )
-        return
-      }
       setSetupOpen(false)
       setNotice('AI connection settings saved.')
     } catch (reason) {
@@ -387,8 +487,12 @@ export function AssistantScreen() {
 
   async function disconnect() {
     setPublikBusy(true)
+    setNotice('Disconnecting publik API…')
     try {
+      // Required mode: the sign-in screen comes back at once (PublikGate listens).
       await disconnectPublik()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Could not disconnect publik API.')
     } finally {
       setPublikBusy(false)
     }
@@ -397,8 +501,11 @@ export function AssistantScreen() {
     setPublikCard(null)
     setClaimUrl(null)
     setClaimState(null)
-    setStarterMicros(null)
-    setNotice('publik API disconnected from this phone.')
+    setNotice(
+      gateMode() === 'optional'
+        ? 'publik API disconnected from this phone. Sign in again from Settings > publik or from Lunara AI.'
+        : 'publik API disconnected from this phone. Lunara asks you to sign in with publik the next time it opens.',
+    )
   }
 
   async function dismissPublikCard() {
@@ -412,7 +519,7 @@ export function AssistantScreen() {
     await setSetting(SK.aiConsent, JSON.stringify(next))
   }
 
-  async function send(textOverride?: string) {
+  async function send(textOverride?: string, agreed = false) {
     const text = (textOverride ?? input).trim()
     if (!text || busy) return
     if (!apiKey) {
@@ -421,16 +528,32 @@ export function AssistantScreen() {
         provider === 'publik'
           ? 'Connect publik API before sending a message, or use your own key.'
           : provider === 'anthropic'
-            ? 'Add an Anthropic key or CLI token before sending a message.'
+            ? subscriptionTokens
+              ? 'Add an Anthropic key or CLI token before sending a message.'
+              : 'Add an Anthropic API key before sending a message.'
             : 'Add an OpenAI key before sending a message.',
       )
       return
     }
 
-    const next = [...messages, { role: 'user' as const, content: text }]
-    setMessages(next)
-    setInput('')
+    // An urgent message gets the safety answer on this phone, with no provider request.
     const safetyIntercept = screenAssistantUrgency(text)
+    if (!safetyIntercept && !agreed) {
+      // Nothing goes to a provider before "Turn on AI chat" for that provider and every ticked category.
+      const destination = healthDestination(provider, baseUrl, aiProviders)
+      if (await chatAgreementNeeded(destination, selectedHealthKinds(consent))) {
+        setChatAsk({ text, destination })
+        return
+      }
+    }
+
+    // Earlier messages go only to the provider that received them (lib/chatHistory.ts).
+    const destination = chatDestination(provider, baseUrl)
+    const history = historyForSend({ destination: chatSentTo, messages }, destination)
+    const next = [...history.messages, { role: 'user' as const, content: text }]
+    setMessages(next)
+    setChatSentTo(destination)
+    setInput('')
     if (safetyIntercept) {
       setMessages([...next, { role: 'assistant', content: safetyIntercept.response }])
       setError(null)
@@ -439,10 +562,11 @@ export function AssistantScreen() {
     }
     setBusy(true)
     setError(null)
-    setNotice(null)
+    setNotice(history.cleared ? NEW_CHAT_NOTICE : null)
     setPublikError(null)
     try {
-      const approvedContext = await collectApprovedAssistantContext(consent)
+      // The one anonymized payload (lib/aiPayload.ts), the same for publik and for an own key.
+      const payload = makeAiPayload({ messages: next, consent, tracker: await collectTrackerSnapshot(consent) })
       const ask = async (key: string) => {
         const config: AssistantConfig = {
           provider,
@@ -451,7 +575,7 @@ export function AssistantScreen() {
           baseUrl: baseUrl || undefined,
           publik: provider === 'publik' ? (publikEndpointState ?? undefined) : undefined,
         }
-        return askAssistantDetailed(config, next, approvedContext)
+        return askAssistantDetailed(config, payload)
       }
       let reply
       try {
@@ -466,10 +590,12 @@ export function AssistantScreen() {
           throw reason
         }
       }
-      setMessages([...next, { role: 'assistant', content: reply.text }])
+      // Guessed calendar dates go before the answer is kept; the placeholders stay (lib/answerDates.ts).
+      setMessages([...next, { role: 'assistant', content: guardAnswerDates(reply.text).text, asOf: localToday() }])
       if (reply.publik) {
-        setPublikUsage(reply.publik)
         if (reply.publik.claimState) setClaimState(reply.publik.claimState)
+        // The plan use comes from GET /wallet (percent and reset), not from the reply headers.
+        void refreshWallet()
       }
     } catch (reason) {
       if (reason instanceof PublikApiError) setPublikError(reason)
@@ -479,12 +605,29 @@ export function AssistantScreen() {
     }
   }
 
+  /** "Turn on AI chat": AI chat with this provider and the ticked categories; then the waiting message goes. */
+  async function agreeAndContinue() {
+    if (!chatAsk || publikConsentWaits) return
+    const { text, destination } = chatAsk
+    await agreeToChat(destination, selectedHealthKinds(consent))
+    setChatAsk(null)
+    if (text) await send(text, true)
+  }
+
+  /** "Not now": AI chat closes and sends nothing. */
+  function chatNotNow() {
+    setChatAsk(null)
+    setAssistantOpen(false)
+  }
+
   function publikErrorAction(failure: PublikApiError): { label: string; run: () => void } | null {
+    // "Add a plan or pack": US App Store storefront only; an unknown storefront gets no button (lib/storefront.ts).
+    const linkLabel = publikErrorLinkLabel(failure, claimState, purchaseLinks)
     switch (failure.kind) {
       case 'needs_credit':
-        return failure.link ? { label: claimState === 'claimed' ? 'Add a plan or pack' : 'Link this phone & pick a plan', run: () => openPublikLink(failure.link as string) } : null
+        return linkLabel ? { label: linkLabel, run: () => openPublikLink(failure.link as string) } : null
       case 'rate_limited':
-        return failure.link ? { label: publikLinkButtonLabel(claimState), run: () => openPublikLink(failure.link as string) } : { label: 'Retry', run: () => void send(messages.at(-1)?.content) }
+        return linkLabel ? { label: linkLabel, run: () => openPublikLink(failure.link as string) } : { label: 'Retry', run: () => void send(messages.at(-1)?.content) }
       case 'unreachable':
         return { label: 'Retry', run: () => void send(messages.at(-1)?.content) }
       case 'disconnected':
@@ -494,13 +637,22 @@ export function AssistantScreen() {
     }
   }
 
+  // The publik agreement names the AI providers; with no list from publik and none kept on this phone, it waits.
+  const publikConsentWaits = chatAsk?.destination.id === 'publik' && providersFrom === 'none' && aiProviders === null
+  const publikConsentOffline = publikConsentWaits && !providersChecking
   const sharedCount = Object.values(consent).filter(Boolean).length
   const linkTarget = claimUrl
   const linkLabel = publikLinkButtonLabel(claimState)
 
   const publikErrorBlock = publikError && (
     <div className="assistant-error" role="alert">
-      <span>{publikError.message}</span>
+      <span>
+        {publikError.planLimit
+          ? planLimitText(publikError.resetsAt ?? planUseFrom(publikUsage)?.resetsAt ?? null, purchaseLinks)
+          : !purchaseLinks && publikError.kind === 'needs_credit'
+            ? notLinkedText(false)
+            : publikError.message}
+      </span>
       <div className="assistant-error-actions">
         {(() => {
           const action = publikErrorAction(publikError)
@@ -561,18 +713,77 @@ export function AssistantScreen() {
           <LunaraMark decorative size={30} />
           <span>Preparing your private space…</span>
         </div>
+      ) : chatAsk && !setupOpen ? (
+        <div className="overlay-body assistant-setup assistant-health-consent" role="alertdialog" aria-labelledby="ai-chat-agreement-title">
+          <section className="assistant-setup-intro">
+            <p className="eyebrow">Lunara AI</p>
+            <h3 id="ai-chat-agreement-title">{CHAT_AGREEMENT_TITLE}</h3>
+            {chatAgreementBody(
+              // publik: the provider list may arrive after the screen opened; show the newest one.
+              chatAsk.destination.id === 'publik' ? healthDestination('publik', undefined, aiProviders) : chatAsk.destination,
+            ).map((line) => (
+              <p key={line}>{line}</p>
+            ))}
+          </section>
+          <section className="card ai-setup-card">
+            <p className="microcopy"><strong>The summary includes</strong></p>
+            <div className="consent-grid">
+              {CONSENT_OPTIONS.map((option) => (
+                <button
+                  key={option.key}
+                  className={`consent-row ${consent[option.key] ? 'selected' : ''}`}
+                  onClick={() => toggleConsent(option.key)}
+                  aria-pressed={consent[option.key]}
+                >
+                  <span>
+                    <strong>{option.title}</strong>
+                    <small>
+                      {option.detail}
+                      {option.sensitive ? ' · Sensitive' : ''}
+                    </small>
+                  </span>
+                  <span className="toggle-dot" aria-hidden="true"><i /></span>
+                </button>
+              ))}
+            </div>
+            <p className="microcopy">{CHAT_SENDS_WITH_TICKED}</p>
+            <p className="microcopy">{CHAT_SENDS_EVERY_TIME}</p>
+          </section>
+          {publikConsentOffline && (
+            <div className="assistant-error" role="alert">
+              <span>{CONSENT_NEEDS_INTERNET}</span>
+              <div className="assistant-error-actions">
+                <button
+                  className="text-button"
+                  onClick={() => {
+                    setProvidersChecking(true)
+                    void refreshWallet().finally(() => setProvidersChecking(false))
+                  }}
+                >
+                  Try again
+                </button>
+              </div>
+            </div>
+          )}
+          <button className="cta" onClick={() => void agreeAndContinue()} disabled={publikConsentWaits}>
+            {CHAT_AGREEMENT_ACCEPT}
+          </button>
+          <button className="text-button" onClick={chatNotNow}>
+            {CHAT_AGREEMENT_DECLINE}
+          </button>
+        </div>
       ) : publikCard && !setupOpen ? (
         <div className="overlay-body assistant-setup">
           <section className="assistant-setup-intro">
             <p className="eyebrow">publik API</p>
             <h3>Lunara AI is ready</h3>
-            <p className="publik-balance">{publikBalanceLine(publikCard.balanceMicros, publikCard.claimState)}</p>
+            <PlanUseMeter usage={publikUsage ?? usageFromBalance(publikCard.balanceMicros, publikCard.claimState)} className="publik-balance" />
           </section>
           <section className="card ai-setup-card">
-            <p className="microcopy">{publikCard.costSentence}</p>
-            <p className="microcopy">{PUBLIK_DATA_PATH}</p>
+            <p className="microcopy">{purchaseLinks ? PUBLIK_PLAN_SENTENCE : `${PUBLIK_PLAN_SENTENCE} ${NO_LINK_PLAN_TEXT}`}</p>
+            <p className="microcopy">{publikDataPath(aiProviders)}</p>
           </section>
-          {publikCard.claimUrl && (
+          {purchaseLinks && publikCard.claimUrl && (
             <button className="cta" onClick={() => openPublikLink(publikCard.claimUrl as string)}>
               {publikLinkButtonLabel(publikCard.claimState)}
             </button>
@@ -588,8 +799,8 @@ export function AssistantScreen() {
             <h3>Choose where answers come from</h3>
             <p>
               {publikHere
-                ? 'publik API needs no key. Your own key, if you add one, stays on this device.'
-                : 'Your key stays on this device.'}
+                ? 'publik API needs no key. If you add your own key, Lunara keeps it on this phone and sends it only to that provider.'
+                : 'Lunara keeps your key on this phone and sends it only to that provider.'}
             </p>
             <div className="ai-provider-grid">
               {publikHere && (
@@ -600,7 +811,7 @@ export function AssistantScreen() {
                   <span className="choice-icon">◐</span>
                   <span>
                     <strong>publik API</strong>
-                    <small>{apiKey && provider === 'publik' ? publikStatusLine(publikUsage) : `No key needed · link once for ${dollars(PUBLIK_LINK_STARTER_MICROS)} of free use`}</small>
+                    <small>{apiKey && provider === 'publik' ? publikStatusLine(publikUsage) : 'No key needed · uses your publik plan'}</small>
                   </span>
                 </button>
               )}
@@ -608,8 +819,8 @@ export function AssistantScreen() {
                 className={`choice-card compact ${provider === 'anthropic' ? 'selected' : ''}`}
                 onClick={() => void chooseProvider('anthropic')}
               >
-                <span className="choice-icon">✳</span>
-                <span><strong>Anthropic</strong><small>API key or Claude CLI login</small></span>
+                <span className="choice-icon">{'\u2733\uFE0E'}</span>
+                <span><strong>Anthropic</strong><small>{subscriptionTokens ? 'API key or Claude CLI login' : 'Your API key'}</small></span>
               </button>
               <button
                 className={`choice-card compact ${provider === 'openai' ? 'selected' : ''}`}
@@ -638,23 +849,26 @@ export function AssistantScreen() {
                     ))}
                   </select>
                 </div>
-                {apiKey && <p className="microcopy"><strong>{publikStatusLine(publikUsage)}</strong></p>}
+                {apiKey && <PlanUseMeter usage={publikUsage} className="microcopy" />}
                 <p className="microcopy">
-                  <strong>Cost.</strong> {costSentence}
-                  {!apiKey && starterMicros === null && costSentence === PUBLIK_WHY_IT_COSTS ? ` ${PUBLIK_STARTS_AT_ZERO}` : ''}
-                  {starterMicros !== null ? ` This phone came with ${dollars(starterMicros)} of free use.` : ''}
+                  <strong>Plan.</strong> {PUBLIK_PLAN_SENTENCE}
+                  {purchaseLinks ? '' : ` ${NO_LINK_PLAN_TEXT}`}
                 </p>
                 <p className="microcopy">
-                  <strong>Where your messages go.</strong> {PUBLIK_DATA_PATH}
+                  <strong>Where your messages go.</strong> {publikDataPath(aiProviders)}
                 </p>
-                {apiKey && linkTarget && (
+                {purchaseLinks && apiKey && linkTarget && (
                   <button className="text-button" onClick={() => openPublikLink(linkTarget)}>
                     {linkLabel}
                   </button>
                 )}
-                <a className="microcopy" href="https://publikhq.com/developers#why" target="_blank" rel="noreferrer">
-                  How pricing works · publik API terms
-                </a>
+                {purchaseLinks ? (
+                  <a className="microcopy" href="https://publikhq.com/developers#why" target="_blank" rel="noreferrer">
+                    publik API terms
+                  </a>
+                ) : (
+                  <p className="microcopy">publik API terms apply.</p>
+                )}
                 {apiKey && (
                   <button className="text-button danger" onClick={() => void disconnect()} disabled={publikBusy}>
                     Disconnect publik API
@@ -667,7 +881,7 @@ export function AssistantScreen() {
             ) : provider === 'anthropic' ? (
               <>
                 <div className="field">
-                  <label htmlFor="assistant-key">Anthropic API key or CLI token</label>
+                  <label htmlFor="assistant-key">{subscriptionTokens ? 'Anthropic API key or CLI token' : 'Anthropic API key'}</label>
                   <input
                     id="assistant-key"
                     type="password"
@@ -675,7 +889,7 @@ export function AssistantScreen() {
                     autoCapitalize="none"
                     autoCorrect="off"
                     spellCheck={false}
-                    placeholder={apiKey ? 'Saved securely · enter to replace' : 'sk-ant-api… or sk-ant-oat…'}
+                    placeholder={apiKey ? 'Saved securely · enter to replace' : subscriptionTokens ? 'sk-ant-api… or sk-ant-oat…' : 'sk-ant-api…'}
                     value={keyInput}
                     onChange={(event) => setKeyInput(event.target.value)}
                   />
@@ -683,19 +897,21 @@ export function AssistantScreen() {
                     <small className="field-hint">
                       Currently using{' '}
                       {credentialKind === 'cli-token'
-                        ? 'a Claude CLI subscription token'
+                        ? subscriptionTokens
+                          ? 'a Claude CLI subscription token'
+                          : 'a Claude subscription token, which this version does not send. Paste an API key'
                         : 'a console API key'}
                       .
                     </small>
                   )}
                 </div>
 
+                {subscriptionTokens && (
                 <details className="assistant-key-fallback">
                   <summary>Use your Claude subscription instead (CLI login)</summary>
                   <p className="microcopy">
-                    Lunara runs in a mobile WebView, so it cannot shell out to the{' '}
-                    <code>claude</code> CLI the way a server can. Run this once on a computer
-                    where you are signed in:
+                    Lunara cannot run the <code>claude</code> command on a phone. Run this once
+                    on a computer where you are signed in to Claude:
                   </p>
                   <pre className="cli-snippet"><code>claude setup-token</code></pre>
                   <p className="microcopy">
@@ -705,6 +921,7 @@ export function AssistantScreen() {
                     rerun the command to refresh it.
                   </p>
                 </details>
+                )}
 
                 <div className="field">
                   <label htmlFor="assistant-model">Model</label>
@@ -799,7 +1016,7 @@ export function AssistantScreen() {
               </svg>
             </button>
             {provider === 'publik' && publikUsage && (
-              <p className="assistant-publik-line">{publikStatusLine(publikUsage)}</p>
+              <PlanUseMeter usage={publikUsage} className="assistant-publik-line" />
             )}
 
             {contextOpen && (
@@ -861,13 +1078,31 @@ export function AssistantScreen() {
               </div>
             )}
             {messages.map((message, index) => (
-              <div key={index} className={`chat-bubble ${message.role}`}>
+              <div key={index} className={`chat-turn ${message.role}`}>
+                <div className={`chat-bubble ${message.role}`}>
+                  {message.role === 'assistant' && (
+                    <span className="chat-bubble-mark" aria-hidden="true">
+                      <LunaraMark decorative size={14} />
+                    </span>
+                  )}
+                  {message.role === 'assistant' ? (
+                    <ChatMarkdown text={renderAnswerDates(message.content, message.asOf ?? localToday())} />
+                  ) : (
+                    <span>{message.content}</span>
+                  )}
+                </div>
                 {message.role === 'assistant' && (
-                  <span className="chat-bubble-mark" aria-hidden="true">
-                    <LunaraMark decorative size={14} />
-                  </span>
+                  <button
+                    className="chat-report-button"
+                    onClick={() => {
+                      // Close the keyboard: the reason card must not sit under it (round 2, M4).
+                      composerInput.current?.blur()
+                      setReportingAnswer(index)
+                    }}
+                  >
+                    {REPORT_ANSWER_LABEL}
+                  </button>
                 )}
-                <span>{message.content}</span>
               </div>
             ))}
             {busy && (
@@ -886,7 +1121,39 @@ export function AssistantScreen() {
         </>
       )}
 
-      {!loading && !setupOpen && !publikCard && (
+      {!loading && !setupOpen && !publikCard && !chatAsk && reportingAnswer !== null && messages[reportingAnswer]?.role === 'assistant' && (
+        // The reason card is a layer over the chat and the message box (round 2, M4): all of it
+        // shows, and no tap reaches the message box under it. A tap outside the card cancels.
+        <div className="chat-report-layer" onClick={() => setReportingAnswer(null)}>
+          <div
+            className="chat-report"
+            role="dialog"
+            aria-modal="true"
+            aria-label={`${REPORT_ANSWER_LABEL}: pick a reason`}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <p>{REPORT_ANSWER_NOTE}</p>
+            <div className="chat-report-reasons">
+              {REPORT_REASONS.map((reason) => (
+                <button
+                  key={reason.id}
+                  onClick={() => {
+                    setReportingAnswer(null)
+                    openPublikLink(publikSupportUrl({ reason: reason.id }))
+                  }}
+                >
+                  {reason.label}
+                </button>
+              ))}
+            </div>
+            <button className="chat-report-cancel" onClick={() => setReportingAnswer(null)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {!loading && !setupOpen && !publikCard && !chatAsk && reportingAnswer === null && (
         <form
           className="assistant-compose"
           onSubmit={(event) => {
@@ -916,7 +1183,9 @@ export function AssistantScreen() {
               </svg>
             </button>
           </div>
-          <p>Educational support only · not diagnosis or emergency care</p>
+          <p>
+            {AI_ANSWER_NOTE} {CHAT_NOT_SAVED}
+          </p>
         </form>
       )}
     </div>

@@ -5,6 +5,7 @@ import { buildCycleReport } from '../engine/patterns'
 import { completedCycles } from '../engine/stats'
 import { formatShort, localToday } from '../lib/dates'
 import { exportCurrentReport } from '../native/reportExport'
+import { ArrowIcon } from '../components/ArrowIcon'
 import '../styles/health.css'
 import '../styles/reports.css'
 
@@ -49,7 +50,7 @@ export function CycleReportScreen({ onBack }: CycleReportScreenProps) {
           onClick={() => void exportReport()}
           aria-label="Export report"
         >
-          ↗
+          <ArrowIcon />
         </button>
       </header>
 
@@ -63,7 +64,7 @@ export function CycleReportScreen({ onBack }: CycleReportScreenProps) {
           {!data ? (
             <div className="health-empty">
               <strong>Building your report</strong>
-              <p>Your entries stay on this device while Lunara calculates the summary.</p>
+              <p>Lunara calculates this summary on this phone.</p>
             </div>
           ) : (
             <>

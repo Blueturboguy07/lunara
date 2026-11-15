@@ -1,6 +1,9 @@
 import { Browser } from '@capacitor/browser'
 import { Children, isValidElement, type ReactNode, useEffect, useMemo, useState } from 'react'
 import { LunaraMark } from '../components/LunaraMark'
+import { APP_NAME } from '../lib/appName'
+import { PlanUseMeter } from '../components/PlanUseMeter'
+import { usePurchaseLinks } from '../components/usePurchaseLinks'
 import {
   createDefaultHealthProfile,
   db,
@@ -19,25 +22,30 @@ import {
 } from '../db/schema'
 import {
   ANTHROPIC_MODELS,
+  claudeSubscriptionTokensAllowed,
   DEFAULT_ANTHROPIC_MODEL,
   DEFAULT_OPENAI_MODEL,
+  openAiKeyProblem,
   type AssistantProvider,
 } from '../lib/assistant'
 import { localToday } from '../lib/dates'
+import { NO_LINK_PLAN_TEXT } from '../lib/storefront'
+import { DATA_STAYS_ON_PHONE, healthDestination, ownKeyDataPath } from '../lib/healthConsent'
 import {
   DEFAULT_PUBLIK_MODEL,
-  dollars,
+  gateAsksPlanHere,
+  isAdultBirthYear,
   markPublikCardSeen,
   provisionPublik,
   PUBLIK_BUILD,
   PUBLIK_DATA_PATH,
-  PUBLIK_LINK_STARTER_MICROS,
-  PUBLIK_STARTS_AT_ZERO,
-  PUBLIK_WHY_IT_COSTS,
+  PUBLIK_PLAN_SENTENCE,
   publikAvailable,
-  publikBalanceLine,
+  usageFromBalance,
   publikLinkButtonLabel,
   PublikApiError,
+  readCredential,
+  setChoice,
   type PublikInstall,
 } from '../lib/publik'
 import { addDays, toEpochDay } from '../engine/cycle'
@@ -52,6 +60,7 @@ import {
   SECURE_SECRET_KEYS,
   setSecureSecret,
 } from '../native/secureVault'
+import { ArrowIcon } from '../components/ArrowIcon'
 
 type StepId =
   | 'welcome'
@@ -116,6 +125,9 @@ type Draft = {
   sleepGoals: string[]
 }
 
+/** Shown in an empty date row (iOS draws an empty date field as a blank; blind test L2). */
+const ADD_DATE = 'Add date'
+
 const GOALS: Array<{ id: Goal; icon: string; label: string; detail: string }> = [
   { id: 'cycle', icon: '◒', label: 'Understand my cycle', detail: 'Periods, body patterns, and what changes over time' },
   { id: 'ttc', icon: '✦', label: 'Try to conceive', detail: 'A cautious fertile window with OPK and temperature context' },
@@ -143,7 +155,7 @@ const TRACKING_AREAS: Option[] = [
   { id: 'mood', icon: '◡', label: 'Mood & energy' },
   { id: 'discharge', icon: '◌', label: 'Discharge' },
   { id: 'sleep', icon: '☾', label: 'Sleep' },
-  { id: 'movement', icon: '↗', label: 'Movement' },
+  { id: 'movement', icon: '\u2197\uFE0E', label: 'Movement' },
   { id: 'fertility', icon: '✦', label: 'Fertility signals' },
   { id: 'sexual-wellbeing', icon: '♡', label: 'Sexual wellbeing' },
 ]
@@ -287,7 +299,7 @@ function Frame({
           {showProgress && onBack
             ? <button type="button" className="back-btn" onClick={onBack} aria-label="Go back">‹</button>
             : <span className="ob-appbar-spacer" aria-hidden="true" />}
-          <div className="lunara-brand-button ob-appbar-mark" aria-label="Lunara">
+          <div className="lunara-brand-button ob-appbar-mark" aria-label={APP_NAME}>
             <LunaraMark decorative size={24} />
           </div>
           {showProgress && onSkip
@@ -458,6 +470,8 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
   const [current, setCurrent] = useState<StepId>('welcome')
   const [draft, setDraft] = useState<Draft>(DEFAULT_DRAFT)
   const [provider, setProvider] = useState<AssistantProvider>('anthropic')
+  // Purchase links, buttons and prices: US App Store storefront only (lib/storefront.ts).
+  const purchaseLinks = usePurchaseLinks()
   const [apiKey, setApiKey] = useState('')
   const [model, setModel] = useState(DEFAULT_ANTHROPIC_MODEL)
   const [baseUrl, setBaseUrl] = useState('')
@@ -481,15 +495,18 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
     birth >= thisYear - 100 &&
     birth <= thisYear - 13
 
-  const adult = age !== null && age >= 18
+  // Adults only, by birth year alone: 19 or more years since the birth year (lib/publikApi.ts).
+  const adult = isAdultBirthYear(draft.birthYear)
   useEffect(() => {
     // publikAvailable() also checks SK.birthYear, which is not saved until finish();
     // the step itself is gated on the typed year, so only the build/vault checks matter here.
     if (!adult) return
     let alive = true
-    void publikAvailable({ assumeAdult: true }).then((ok) => {
+    void Promise.all([publikAvailable({ assumeAdult: true }), readCredential()]).then(([ok, credential]) => {
       if (!alive || !ok) return
       setPublikHere(true)
+      // "Use my own key" on the sign-in gate's plan screen: keep the own-key provider preselected.
+      if (credential?.choice === 'own_key') return
       setProvider((current) => (current === 'anthropic' && !apiKey.trim() ? 'publik' : current))
       setModel((current) => (current === DEFAULT_ANTHROPIC_MODEL ? DEFAULT_PUBLIK_MODEL : current))
     })
@@ -518,10 +535,11 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
       draft.goal === 'peri'
     ) next.push('sleep')
     next.push('summary')
-    if ((age ?? 0) >= 18) next.push('ai')
+    // On a phone the publik gate asks how to pay for AI after onboarding (lib/publik.ts), so this step is for browser builds.
+    if (adult && !gateAsksPlanHere()) next.push('ai')
     next.push('finish')
     return next
-  }, [age, draft.goal, draft.sleepImpact, draft.trackingAreas, hormonalMethod])
+  }, [adult, draft.goal, draft.sleepImpact, draft.trackingAreas, hormonalMethod])
 
   const progressSteps: StepId[] = steps.filter((step) => step !== 'welcome' && step !== 'finish')
   const progressIndex = Math.max(1, progressSteps.indexOf(current) + 1)
@@ -669,6 +687,9 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
     setSaving(true)
     setSaveError(null)
     try {
+      // The OpenAI slot never takes an Anthropic credential (it would go to OpenAI or a custom service).
+      const keyProblem = steps.includes('ai') && provider === 'openai' && apiKey.trim() ? openAiKeyProblem(apiKey) : null
+      if (keyProblem) throw new Error(keyProblem)
       const defaults = createDefaultHealthProfile()
       const pregnancyDating =
         draft.goal === 'pregnancy' && draft.pregnancyDatingDate
@@ -746,7 +767,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
           ageBand:
             age === null
               ? 'unknown'
-              : age >= 18
+              : adult
                 ? 'adult'
                 : age >= 16
                   ? '16-17'
@@ -764,8 +785,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
             {
               purpose: 'assistant-sharing',
               state:
-                age !== null &&
-                age >= 18 &&
+                adult &&
                 (provider === 'publik' ? publikInstall !== null : apiKey.trim().length > 0)
                   ? 'granted'
                   : 'not-requested',
@@ -775,7 +795,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
             {
               purpose: 'publik-api',
               state:
-                age !== null && age >= 18 && provider === 'publik' && publikInstall !== null
+                adult && provider === 'publik' && publikInstall !== null
                   ? 'granted'
                   : 'not-requested',
               version: 1,
@@ -796,21 +816,29 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
       }
 
       await putHealthProfile(profile)
+      // The AI step ran only when it is in the steps (browser builds); on a phone the gate's plan screen follows onboarding.
+      const aiStepShown = steps.includes('ai')
       await Promise.all([
         setSetting(SK.goal, draft.goal),
         setSetting(SK.birthYear, draft.birthYear),
         setSetting(SK.cycleLength, draft.typicalCycleLength),
-        setSetting(SK.aiProvider, provider),
-        setSetting(
-          SK.aiModel,
-          model.trim() ||
-            (provider === 'publik'
-              ? DEFAULT_PUBLIK_MODEL
-              : provider === 'anthropic'
-                ? DEFAULT_ANTHROPIC_MODEL
-                : DEFAULT_OPENAI_MODEL),
-        ),
-        setSetting(SK.aiBaseUrl, provider === 'publik' ? '' : baseUrl.trim()),
+        ...(aiStepShown
+          ? [
+              setSetting(SK.aiProvider, provider),
+              setSetting(
+                SK.aiModel,
+                model.trim() ||
+                  (provider === 'publik'
+                    ? DEFAULT_PUBLIK_MODEL
+                    : provider === 'anthropic'
+                      ? DEFAULT_ANTHROPIC_MODEL
+                      : DEFAULT_OPENAI_MODEL),
+              ),
+              setSetting(SK.aiBaseUrl, provider === 'publik' ? '' : baseUrl.trim()),
+              // The AI step answers the gate's plan question; keep both the same.
+              setChoice(provider === 'publik' ? 'publik' : 'own_key'),
+            ]
+          : []),
       ])
 
       if (draft.goal === 'pregnancy' && pregnancyDating) {
@@ -826,7 +854,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         }
       }
 
-      if (provider !== 'publik' && apiKey.trim()) {
+      if (aiStepShown && provider !== 'publik' && apiKey.trim()) {
         await setSecureSecret(
           provider === 'anthropic'
             ? SECURE_SECRET_KEYS.anthropicApiKey
@@ -859,7 +887,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
             <span className="ob-hero-label">Built for private, local-first tracking</span>
           </div>
           <div>
-            <p className="eyebrow">Meet Lunara</p>
+            <p className="eyebrow">Meet {APP_NAME}</p>
             <h1>A clearer map of your changing body.</h1>
             <p className="lead">
               Start with what you know. Lunara will adapt its questions, show when an estimate is
@@ -873,7 +901,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
           </div>
           <p className="ob-legal">Educational estimates only—not diagnosis or birth control.</p>
         </div>
-        <button className="cta" onClick={next}>Build my baseline <span aria-hidden="true">→</span></button>
+        <button className="cta" onClick={next}>Build my baseline <ArrowIcon direction="right" /></button>
       </Frame>
     )
   }
@@ -885,7 +913,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         <QuestionIntro
           eyebrow="Let’s make this feel like yours"
           title="What should Lunara call you?"
-          body="A first name or nickname is enough. It never has to leave your device."
+          body="A first name or nickname is enough. AI chat never sends it."
         />
         <div className="field ob-hero-field">
           <label htmlFor="display-name">Name or nickname</label>
@@ -941,7 +969,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
       <Frame {...frameProps} chapter="Privacy">
         <QuestionIntro
           eyebrow="Sensitive data deserves a clear boundary"
-          title="Your core health history stays on this device."
+          title={DATA_STAYS_ON_PHONE}
           body="Lunara needs permission to store the answers and logs you choose to enter. You can export or erase them from Settings."
         />
         <div className="ob-summary-list privacy">
@@ -955,10 +983,10 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
           </article>
           <article>
             <span className="cautious">Ask first</span>
-            <div><strong>AI and health imports</strong><p>They remain separate and require an explicit setup or operating-system permission later.</p></div>
+            <div><strong>AI chat and health imports</strong><p>AI chat is optional. It sends data off this phone only after you turn it on. Health imports need your phone’s permission.</p></div>
           </article>
         </div>
-        {age !== null && age < 18 && (
+        {age !== null && !adult && (
           <div className="ob-safety-note">
             <strong>Age-aware setup</strong>
             <p>Optional AI setup is hidden for this profile. Regional or guardian requirements may also apply before distribution.</p>
@@ -1035,7 +1063,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
     const regularityOptions: Array<{ id: CycleRegularity; label: string; detail: string }> = [
       { id: 'regular', label: 'Usually predictable', detail: 'The gap is roughly similar, though it does not need to be exactly the same.' },
       { id: 'irregular', label: 'Often unpredictable', detail: 'Lunara will show wider ranges and avoid pretending there is one exact day.' },
-      { id: 'unsure', label: 'I’m not sure yet', detail: 'That is enough to start. Your prospective history matters more than a guess.' },
+      { id: 'unsure', label: 'I’m not sure yet', detail: 'That is enough to start. The periods you log from now on matter more than a guess.' },
     ]
     return (
       <Frame {...frameProps} chapter="Cycle context" onSkip={() => { patch({ dateConfidence: 'unknown' }); next() }}>
@@ -1091,19 +1119,23 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
           {draft.periodStarts.map((date, index) => (
             <label key={index}>
               <span>{index === 0 ? 'Most recent' : index === 1 ? 'One before' : 'Two before'}</span>
-              <input
-                type="date"
-                max={localToday()}
-                value={date}
-                onChange={(event) => {
-                  const periodStarts: Draft['periodStarts'] = [...draft.periodStarts]
-                  periodStarts[index] = event.target.value
-                  patch({
-                    periodStarts,
-                    dateConfidence: event.target.value ? 'known' : draft.dateConfidence,
-                  })
-                }}
-              />
+              <div className="ob-date-input">
+                <input
+                  type="date"
+                  className={date ? undefined : 'is-empty'}
+                  max={localToday()}
+                  value={date}
+                  onChange={(event) => {
+                    const periodStarts: Draft['periodStarts'] = [...draft.periodStarts]
+                    periodStarts[index] = event.target.value
+                    patch({
+                      periodStarts,
+                      dateConfidence: event.target.value ? 'known' : draft.dateConfidence,
+                    })
+                  }}
+                />
+                {!date && <em className="ob-date-empty" aria-hidden="true">{ADD_DATE}</em>}
+              </div>
             </label>
           ))}
         </div>
@@ -1193,18 +1225,22 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         <div className="ob-date-card single">
           <label>
             <span>{datingLabel}</span>
-            <input
-              type="date"
-              min={draft.pregnancyDatingMethod === 'clinician-edd' ? localToday() : undefined}
-              max={draft.pregnancyDatingMethod === 'clinician-edd' ? undefined : localToday()}
-              value={draft.pregnancyDatingDate}
-              onChange={(event) =>
-                patch({
-                  pregnancyDatingDate: event.target.value,
-                  dateConfidence: event.target.value ? 'known' : 'unknown',
-                })
-              }
-            />
+            <div className="ob-date-input">
+              <input
+                type="date"
+                className={draft.pregnancyDatingDate ? undefined : 'is-empty'}
+                min={draft.pregnancyDatingMethod === 'clinician-edd' ? localToday() : undefined}
+                max={draft.pregnancyDatingMethod === 'clinician-edd' ? undefined : localToday()}
+                value={draft.pregnancyDatingDate}
+                onChange={(event) =>
+                  patch({
+                    pregnancyDatingDate: event.target.value,
+                    dateConfidence: event.target.value ? 'known' : 'unknown',
+                  })
+                }
+              />
+              {!draft.pregnancyDatingDate && <em className="ob-date-empty" aria-hidden="true">{ADD_DATE}</em>}
+            </div>
           </label>
         </div>
         <h2 className="ob-subquestion">How many babies are you expecting?</h2>
@@ -1279,7 +1315,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         <QuestionIntro
           eyebrow="A baseline, not a diagnosis"
           title="What are you noticing today?"
-          body="This seeds your first check-in. Lunara only calls something a pattern after it repeats across prospectively tracked cycles."
+          body="This seeds your first check-in. Lunara only calls something a pattern after it repeats across cycles you track from now on."
         />
         <ChipGrid options={SYMPTOM_OPTIONS} values={draft.baselineSymptoms} exclusive="none" onToggle={(id) => toggle('baselineSymptoms', id, 'none')} />
         <div className="ob-why">
@@ -1353,7 +1389,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
           {([
             ['sleepImpact', 'Sleep', '☾'],
             ['skinImpact', 'Skin', '✺'],
-            ['activityImpact', 'Energy', '↗'],
+            ['activityImpact', 'Energy', '\u2197\uFE0E'],
           ] as const).map(([key, label, icon]) => (
             <section key={key}>
               <div><span aria-hidden="true">{icon}</span><strong>{label}</strong></div>
@@ -1444,7 +1480,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
           ))}
         </div>
         <div className="ob-why">
-          <span aria-hidden="true">↗</span>
+          <span aria-hidden="true"><ArrowIcon /></span>
           <p><strong>Permission comes later</strong> Lunara explains the benefit before asking iOS or Android for health access.</p>
         </div>
         <button className="cta" onClick={next}>Continue</button>
@@ -1545,7 +1581,8 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
           <span aria-hidden="true">i</span>
           <p>Conditions and baseline symptoms only tailor caution, logging, and education. They do not generate a condition result.</p>
         </div>
-        <button className="cta" onClick={next}>Continue to optional AI</button>
+        {/* On a phone the AI step is not part of onboarding (the publik gate asks later): the label says where the button goes (blind test L4). */}
+        <button className="cta" onClick={next}>{steps.includes('ai') ? 'Continue to optional AI' : 'Continue'}</button>
       </Frame>
     )
   }
@@ -1558,20 +1595,27 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
           title="Choose how the assistant runs."
           body={
             publikHere
-              ? 'Core tracking and calculations work without AI. The assistant runs on publik API unless you bring your own key.'
-              : 'Core tracking and calculations work without AI. You bring your own credential.'
+              ? 'AI chat is optional. Core tracking and calculations work without it. The assistant runs on publik API unless you bring your own key. It asks before it sends anything off this phone.'
+              : 'AI chat is optional. Core tracking and calculations work without it. You bring your own credential. It asks before it sends anything off this phone.'
           }
         />
         <div className="ai-provider-grid">
           {publikHere && (
             <OptionCard
-              option={{ id: 'publik', icon: '◐', label: 'publik API', detail: `No key needed. Starts at $0.00; link your publik account for ${dollars(PUBLIK_LINK_STARTER_MICROS)} of free use, then priced per use.` }}
+              option={{ id: 'publik', icon: '◐', label: 'publik API', detail: 'No key needed. Uses your publik plan.' }}
               selected={provider === 'publik'}
               onClick={() => chooseProvider('publik')}
             />
           )}
           <OptionCard
-            option={{ id: 'anthropic', icon: '✳', label: 'Anthropic', detail: 'An API key, or a token from `claude setup-token` to use your Claude subscription.' }}
+            option={{
+              id: 'anthropic',
+              icon: '\u2733\uFE0E', // text style, not the colour emoji (one icon style; blind test L8)
+              label: 'Anthropic',
+              detail: claudeSubscriptionTokensAllowed()
+                ? 'An API key, or a token from `claude setup-token` to use your Claude subscription.'
+                : 'Bring your own API key. Stored in Keychain or Keystore on native.',
+            }}
             selected={provider === 'anthropic'}
             onClick={() => chooseProvider('anthropic')}
           />
@@ -1584,10 +1628,10 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         {provider === 'publik' && publikInstall ? (
           <div className="card ai-setup-card">
             <p className="microcopy"><strong>Lunara AI is ready.</strong></p>
-            <p className="publik-balance">{publikBalanceLine(publikInstall.balanceMicros, publikInstall.claimState)}</p>
-            <p className="microcopy">{publikInstall.costSentence ?? PUBLIK_WHY_IT_COSTS}</p>
+            <PlanUseMeter usage={usageFromBalance(publikInstall.balanceMicros, publikInstall.claimState)} className="publik-balance" />
+            <p className="microcopy">{purchaseLinks ? PUBLIK_PLAN_SENTENCE : `${PUBLIK_PLAN_SENTENCE} ${NO_LINK_PLAN_TEXT}`}</p>
             <p className="microcopy">{PUBLIK_DATA_PATH}</p>
-            {publikInstall.claimUrl && (
+            {purchaseLinks && publikInstall.claimUrl && (
               <button className="cta" onClick={() => void Browser.open({ url: publikInstall.claimUrl as string })}>
                 {publikLinkButtonLabel(publikInstall.claimState)}
               </button>
@@ -1597,15 +1641,15 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
           <div className="card ai-setup-card">
             <p className="microcopy"><strong>Lunara AI uses publik API.</strong></p>
             <p className="microcopy">
-              <strong>Cost.</strong> {PUBLIK_WHY_IT_COSTS} {PUBLIK_STARTS_AT_ZERO} Most people spend
-              under $2 a month after that.
+              <strong>Plan.</strong> {PUBLIK_PLAN_SENTENCE}
+              {purchaseLinks ? '' : ` ${NO_LINK_PLAN_TEXT}`}
             </p>
             <p className="microcopy">
               <strong>Where your messages go.</strong> {PUBLIK_DATA_PATH}
             </p>
             <p className="microcopy">
               By continuing you agree to the{' '}
-              <a href="https://publikhq.com/developers#why" target="_blank" rel="noreferrer">publik API terms</a>.
+              {purchaseLinks ? <a href="https://publikhq.com/developers#why" target="_blank" rel="noreferrer">publik API terms</a> : 'publik API terms'}.
               You can switch to your own key at any time in AI settings.
             </p>
             {publikError && <p className="microcopy" role="alert">{publikError}</p>}
@@ -1614,7 +1658,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
         ) : provider === 'anthropic' ? (
           <div className="card ai-setup-card">
             <div className="field">
-              <label htmlFor="anthropic-key">Anthropic API key or CLI token</label>
+              <label htmlFor="anthropic-key">{claudeSubscriptionTokensAllowed() ? 'Anthropic API key or CLI token' : 'Anthropic API key'}</label>
               <input
                 id="anthropic-key"
                 type="password"
@@ -1639,11 +1683,14 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
                 ))}
               </select>
             </div>
-            <p className="microcopy">
-              To bill answers to a Claude subscription instead of API credits, run{' '}
-              <code>claude setup-token</code> on a computer where you are signed in and paste the
-              token here. Lunara cannot run the CLI itself from a mobile app.
-            </p>
+            {claudeSubscriptionTokensAllowed() && (
+              <p className="microcopy">
+                To bill answers to a Claude subscription instead of API credits, run{' '}
+                <code>claude setup-token</code> on a computer where you are signed in and paste the
+                token here. Lunara cannot run the CLI itself from a mobile app.
+              </p>
+            )}
+            <p className="microcopy">{ownKeyDataPath(healthDestination('anthropic'))}</p>
           </div>
         ) : (
           <div className="card ai-setup-card">
@@ -1666,6 +1713,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
               <input id="openai-model" autoCapitalize="none" spellCheck={false} value={model} onChange={(event) => setModel(event.target.value)} />
             </div>
             <p className="microcopy">Use a dedicated project key with a spending limit. Never paste a personal or reused secret into screenshots or chat.</p>
+            <p className="microcopy">{ownKeyDataPath(healthDestination('openai', baseUrl))}</p>
           </div>
         )}
         {provider === 'publik' && publikInstall ? (

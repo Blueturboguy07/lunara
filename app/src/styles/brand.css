@@ -6,8 +6,9 @@
 }
 
 .lunara-brand-button {
-  width: 42px;
-  height: 42px;
+  /* A tap target of 44 px (blind test round 2, L6). */
+  width: 44px;
+  height: 44px;
   display: grid;
   place-items: center;
   color: var(--rose-600);

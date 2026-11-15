@@ -36,6 +36,7 @@ import {
   SYMPTOMS,
   TRACKER_GROUPS,
 } from '../db/taxonomy'
+import { addDays } from '../engine/cycle'
 import { formatLong } from '../lib/dates'
 import { nativeTap } from '../native/runtime'
 import type { TrackerFocus } from '../state/appStore'
@@ -115,6 +116,8 @@ export function LogSheet({
   onClose: () => void
 }) {
   const existing = useLiveQuery(() => db.dailyLogs.get(date), [date])
+  // Flow on the day before means this flow continues a period; without it, the flow starts one.
+  const dayBefore = useLiveQuery(() => db.dailyLogs.get(addDays(date, -1)), [date])
   const customizationJSON = useLiveQuery(() => getSetting(TRACKER_CUSTOMIZATION_KEY), [])
   const [draft, setDraft] = useState<DailyLog>({ date })
   const [loadedFor, setLoadedFor] = useState<string | null>(null)
@@ -277,7 +280,7 @@ export function LogSheet({
         }}
       >
         <div className="spread">
-          <div>
+          <div style={{ flex: '1 1 180px', minWidth: 0 }}>
             <div className="section-label">Check-in coverage</div>
             <div className="muted" style={{ marginTop: 3 }}>
               Mark this after you have reviewed today—even if nothing needs logging.
@@ -321,6 +324,13 @@ export function LogSheet({
               </button>
             ))}
           </div>
+          {draft.flow && (
+            <div className="muted" role="status">
+              {dayBefore?.flow
+                ? 'Lunara marks this day as a period day.'
+                : 'Lunara marks this day as the first day of your period.'}
+            </div>
+          )}
         </div>
       )}
 
@@ -440,7 +450,7 @@ export function LogSheet({
       {isVisible('intimacy') && visibleIntimacy.length > 0 && (
         <div id="tracker-intimacy" className="tracker-section" style={sectionStyle('intimacy')}>
           <div className="section-label">Sex &amp; drive</div>
-          <div className="muted">Choose every item that applies. These entries stay on your device.</div>
+          <div className="muted">Choose every item that applies. Your data stays on this phone unless you turn on AI chat or encrypted backup.</div>
           <div className="chip-wrap">
             {visibleIntimacy.map((s) => (
               <button

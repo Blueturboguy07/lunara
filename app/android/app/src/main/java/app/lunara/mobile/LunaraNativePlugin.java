@@ -7,6 +7,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.net.Uri;
 import android.hardware.biometrics.BiometricManager;
 import android.hardware.biometrics.BiometricPrompt;
 import android.hardware.fingerprint.FingerprintManager;
@@ -26,8 +27,12 @@ import android.health.connect.datatypes.SleepSessionRecord;
 import android.health.connect.datatypes.StepsRecord;
 import android.health.connect.datatypes.WeightRecord;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.CancellationSignal;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.OutcomeReceiver;
+import android.util.Log;
 import android.print.PrintDocumentAdapter;
 import android.print.PrintJob;
 import android.print.PrintManager;
@@ -59,6 +64,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -105,6 +111,87 @@ public class LunaraNativePlugin extends Plugin {
         permissions.put("sleep", HealthPermissions.READ_SLEEP);
         permissions.put("steps", HealthPermissions.READ_STEPS);
         HEALTH_PERMISSIONS = Collections.unmodifiableMap(permissions);
+    }
+
+    // publik launch options and self-test
+
+    private static final String[] PUBLIK_LAUNCH_NAMES = {
+        "PUBLIK_API_BASE_URL", "PUBLIK_SELF_TEST", "DO_NOT_TRACK", "PUBLIK_TELEMETRY", "PUBLIK_TELEMETRY_DEBUG"
+    };
+
+    /** The two test hooks. They exist only in a test build: BuildConfig.PUBLIK_TEST_HOOKS (build.gradle). */
+    private static final Set<String> PUBLIK_TEST_HOOK_NAMES = Collections.unmodifiableSet(
+        new LinkedHashSet<>(Arrays.asList("PUBLIK_API_BASE_URL", "PUBLIK_SELF_TEST"))
+    );
+
+    /** The fake publik of a test runs on this computer: 10.0.2.2 is the computer, seen from the emulator. */
+    private static final Set<String> PUBLIK_TEST_HOSTS = Collections.unmodifiableSet(
+        new LinkedHashSet<>(Arrays.asList("127.0.0.1", "localhost", "10.0.2.2"))
+    );
+
+    /**
+     * A value for the publik module (src/lib/publik.ts), from the intent that started the app:
+     * adb shell am start -a android.intent.action.MAIN -n app.lunara.mobile/.MainActivity --es PUBLIK_SELF_TEST 1
+     * Rules:
+     *   - only a launcher start (action MAIN, or no action from `am start -n`); never a link
+     *     (VIEW or BROWSABLE) that a web page or another app can send;
+     *   - PUBLIK_API_BASE_URL and PUBLIK_SELF_TEST only in a test build (BuildConfig.PUBLIK_TEST_HOOKS,
+     *     set by CI with -PpublikTestHooks=true; a release build never has it, debuggable or not);
+     *   - PUBLIK_API_BASE_URL only for a host on this computer (127.0.0.1, localhost, 10.0.2.2).
+     */
+    @SuppressWarnings("deprecation")
+    private String publikLaunchValue(String name) {
+        if (PUBLIK_TEST_HOOK_NAMES.contains(name) && !BuildConfig.PUBLIK_TEST_HOOKS) return null;
+        Activity activity = getActivity();
+        Intent intent = activity == null ? null : activity.getIntent();
+        if (intent == null) return null;
+        String action = intent.getAction();
+        if (action != null && !Intent.ACTION_MAIN.equals(action)) return null;
+        if (intent.hasCategory(Intent.CATEGORY_BROWSABLE)) return null;
+        Bundle extras = intent.getExtras();
+        Object raw = extras == null ? null : extras.get(name);
+        String value = raw == null ? null : String.valueOf(raw).trim();
+        if (value == null || value.isEmpty()) return null;
+        if ("PUBLIK_API_BASE_URL".equals(name)) {
+            Uri uri = Uri.parse(value);
+            String scheme = uri.getScheme();
+            String host = uri.getHost();
+            if (scheme == null || host == null) return null;
+            if (!"http".equals(scheme) && !"https".equals(scheme)) return null;
+            if (!PUBLIK_TEST_HOSTS.contains(host.toLowerCase(Locale.ROOT))) return null;
+        }
+        return value;
+    }
+
+    @PluginMethod
+    public void publikLaunchOptions(PluginCall call) {
+        JSObject options = new JSObject();
+        for (String name : PUBLIK_LAUNCH_NAMES) {
+            String value = publikLaunchValue(name);
+            if (value != null) options.put(name, value);
+        }
+        call.resolve(options);
+    }
+
+    /** PUBLIK_SELF_TEST: print the module's one line (logcat tag "publik" and stdout), then end the app. */
+    @PluginMethod
+    public void publikSelfTestDone(PluginCall call) {
+        if (publikLaunchValue("PUBLIK_SELF_TEST") == null) {
+            call.reject("No publik self-test was requested.", "PUBLIK_NO_SELF_TEST");
+            return;
+        }
+        String line = call.getString("line", "publik self-test: failed: no result");
+        Log.i("publik", line);
+        System.out.println(line);
+        call.resolve();
+        Activity activity = getActivity();
+        new Handler(Looper.getMainLooper()).postDelayed(
+            () -> {
+                if (activity != null) activity.finishAndRemoveTask();
+                System.exit(0);
+            },
+            300
+        );
     }
 
     // Report export

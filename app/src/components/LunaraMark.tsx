@@ -1,4 +1,5 @@
 import '../styles/brand.css'
+import { APP_NAME } from '../lib/appName'
 
 export const LUNARA_CRESCENT_PATH =
   'M49.2 5.8C39.1 9.4 31.9 19.1 31.9 30.5c0 12.3 8.7 22.6 20.3 25A28.8 28.8 0 0 1 32 63C14.9 63 1 49.1 1 32S14.9 1 32 1c6.3 0 12.2 1.9 17.2 4.8Z'
@@ -19,7 +20,7 @@ interface LunaraMarkProps {
 export function LunaraMark({
   className = '',
   decorative = false,
-  label = 'Lunara',
+  label = APP_NAME,
   size = 32,
 }: LunaraMarkProps) {
   return (

@@ -4,7 +4,7 @@ import { SECRET_KEYS } from './transfer'
 
 describe('backup export guard', () => {
   it('keeps the device-bound publik install identity out of every export', () => {
-    for (const key of [SK.publikInstallId, SK.publikClaimUrl, SK.publikClaimState, SK.publikCardSeen]) {
+    for (const key of [SK.publikInstallId, SK.publikClaimUrl, SK.publikClaimState, SK.publikCardSeen, SK.publikChoice, SK.publikTelemetryId, SK.aiHealthConsent]) {
       expect(SECRET_KEYS).toContain(key)
     }
     // Consent records and the non-secret endpoint may travel, like aiConsent does.

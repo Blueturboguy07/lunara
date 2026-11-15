@@ -1,5 +1,9 @@
 apply plugin: 'com.android.application'
 
+// One source for the version: app/package.json ("version", "buildNumber").
+// iOS keeps the same two values in ios/App/Lunara.xcconfig (src/lib/nativeVersion.test.ts checks both).
+def lunaraPackage = new groovy.json.JsonSlurper().parse(file('../../package.json'))
+
 android {
     namespace = "app.lunara.mobile"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -7,8 +11,11 @@ android {
         applicationId "app.lunara.mobile"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode((lunaraPackage.buildNumber ?: 1) as Integer)
+        versionName lunaraPackage.version
+        // The publik test hooks (PUBLIK_API_BASE_URL, PUBLIK_SELF_TEST; LunaraNativePlugin.java):
+        // only in a test build made with -PpublikTestHooks=true (CI). "debuggable" does not turn them on.
+        buildConfigField "boolean", "PUBLIK_TEST_HOOKS", (project.findProperty('publikTestHooks') == 'true') ? 'true' : 'false'
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -38,8 +45,14 @@ android {
         }
     }
 
+    buildFeatures {
+        buildConfig = true
+    }
+
     buildTypes {
         release {
+            // A release build never has the publik test hooks, whatever the command line says.
+            buildConfigField "boolean", "PUBLIK_TEST_HOOKS", "false"
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
             if (project.hasProperty('android.injected.signing.store.file')) {

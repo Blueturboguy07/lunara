@@ -98,6 +98,46 @@
   max-width: 10ch;
 }
 
+/* Sign in with publik (components/PublikGate.tsx): the same centred card. */
+.publik-gate .startup-failure-page {
+  width: 100%;
+}
+
+.publik-gate-card h1 {
+  max-width: none;
+}
+
+.publik-gate-note {
+  font-weight: 650;
+}
+
+.publik-gate-actions {
+  display: grid;
+  gap: 10px;
+}
+
+/* A gate screen asked while the app is open (the plan after onboarding, an on-demand sign-in). */
+.publik-gate-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  overflow-y: auto;
+  background: var(--paper-100);
+}
+
+/* The health-data consent screen inside Lunara AI. */
+.assistant-health-consent ul {
+  margin: 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 4px;
+}
+
+.medical-advice-note {
+  margin-top: 6px;
+  font-weight: 600;
+}
+
 .startup-failure-details {
   color: var(--ink-500);
   font-size: 13px;
@@ -318,7 +358,7 @@ button.card:active {
 }
 
 .chip {
-  min-height: 39px;
+  min-height: 44px;
   padding: 8px 14px;
   color: var(--ink-800);
   font-size: 13px;
@@ -469,8 +509,8 @@ button.card:active {
 }
 
 .sheet-close {
-  width: 36px;
-  height: 36px;
+  width: 44px;
+  height: 44px;
   display: grid;
   place-items: center;
   color: var(--ink-650);
@@ -495,6 +535,21 @@ button.card:active {
   overflow-y: auto;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
+}
+
+/*
+ * .log-group and .card have overflow: hidden, so in this scrolling flex column
+ * they could shrink below their content (blind test M3: "Check-in coverage"
+ * was cut). The groups keep their full height; the sheet scrolls.
+ */
+.sheet-body > * {
+  flex-shrink: 0;
+}
+
+/* A label with a button on its right: the button goes below when space is short. */
+.log-group > .spread {
+  flex-wrap: wrap;
+  gap: 10px 12px;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -587,7 +642,7 @@ button.card:active {
 }
 
 .calendar-toolbar button {
-  min-height: 37px;
+  min-height: 44px;
   padding: 0 13px;
   color: var(--ink-650);
   font-size: 12px;
@@ -749,8 +804,8 @@ button.card:active {
 }
 
 .icon-button {
-  width: 42px;
-  height: 42px;
+  width: 44px;
+  height: 44px;
   display: grid;
   place-items: center;
   color: var(--ink-800);
@@ -1016,7 +1071,7 @@ button.card:active {
 }
 
 .phase-action {
-  min-height: 38px;
+  min-height: 44px;
   margin-top: 17px;
   padding: 8px 16px;
   color: var(--phase-accent);
@@ -1036,7 +1091,7 @@ button.card:active {
   position: relative;
   z-index: 2;
   width: 100%;
-  min-height: 36px;
+  min-height: 44px;
   margin-top: auto;
   padding: 14px 3px 0;
   display: flex;
@@ -2466,12 +2521,20 @@ button.card:active {
 }
 
 .insights-search button {
+  position: relative;
   width: 30px;
   height: 30px;
   color: var(--ink-500);
   font-size: 20px;
   background: var(--paper-200);
   border-radius: 50%;
+}
+
+/* The clear button looks small; its tap area is 44 px (blind test L1). */
+.insights-search button::before {
+  content: '';
+  position: absolute;
+  inset: -7px;
 }
 
 .search-results {
@@ -2857,8 +2920,8 @@ button.card:active {
 }
 
 .back-btn {
-  width: 38px;
-  height: 38px;
+  width: 44px;
+  height: 44px;
   flex: 0 0 auto;
   display: grid;
   place-items: center;
@@ -3096,7 +3159,8 @@ button.card:active {
 
 .reminder-switch input {
   position: absolute;
-  inset: 0;
+  /* The tap area is 44 px or more, larger than the drawn switch (blind test L1). */
+  inset: -10px -2px;
   z-index: 1;
   margin: 0;
   cursor: pointer;
@@ -3344,6 +3408,16 @@ button.card:active {
   background: linear-gradient(90deg, var(--coral-400), var(--rose-600));
   border-radius: inherit;
   transition: width 420ms var(--ease-out);
+}
+
+/* publik plan use (components/PlanUseMeter.tsx): a percent and a bar, never money. */
+.plan-use-line {
+  margin: 0;
+}
+
+.plan-use-track {
+  height: 6px;
+  margin-top: 6px;
 }
 
 .step-count {
@@ -3627,7 +3701,7 @@ button.card:active {
 }
 
 .text-button {
-  min-height: 42px;
+  min-height: 44px;
   color: var(--ink-650);
   font-size: 12px;
   font-weight: 700;
@@ -3637,9 +3711,50 @@ button.card:active {
   background: none;
 }
 
+/* Settings: a message for the last action, above the tab bar and always on screen. */
+.settings-toast {
+  position: fixed;
+  left: 16px;
+  right: 16px;
+  bottom: calc(var(--tabbar-height) + var(--safe-bottom) + 24px);
+  z-index: 40;
+  max-width: 560px;
+  max-height: 40vh;
+  margin: 0 auto;
+  padding: 12px 12px 12px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  overflow-y: auto;
+  color: var(--ink-900);
+  font-size: 14px;
+  line-height: 1.45;
+  background: var(--rose-100);
+  border: 1px solid var(--rose-200);
+  border-radius: 16px;
+  box-shadow: 0 12px 30px rgba(75, 45, 50, 0.16);
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.settings-toast > span {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.settings-toast > button {
+  min-width: 44px;
+  min-height: 44px;
+  flex: 0 0 auto;
+  color: var(--rose-700);
+  font-weight: 800;
+  background: transparent;
+}
+
+/* Small notes stay readable (blind test L9): 12 px and 4.5:1 contrast or more. */
 .microcopy {
-  color: var(--ink-500);
-  font-size: 9.5px;
+  color: var(--ink-650);
+  font-size: 12px;
   line-height: 1.5;
 }
 
@@ -3934,7 +4049,7 @@ button.card:active {
 }
 
 .biometric-unlock {
-  min-height: 42px;
+  min-height: 44px;
   margin: -8px auto 0;
   padding: 0 15px;
   display: inline-flex;
@@ -4952,6 +5067,33 @@ button.card:active {
   margin-top: 18px;
 }
 
+/* An empty date row says "Add date" (an empty iOS date field is blank). */
+.ob-date-input {
+  position: relative;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.ob-date-input input.is-empty {
+  min-width: 104px;
+  color: transparent;
+}
+
+.ob-date-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  color: var(--rose-700);
+  font-size: 13px;
+  font-style: normal;
+  font-weight: 750;
+  pointer-events: none;
+}
+
 .ob-date-card.single label {
   min-height: 67px;
 }
@@ -5183,7 +5325,7 @@ button.card:active {
 }
 
 .ob-segmented button {
-  min-height: 43px;
+  min-height: 44px;
   color: var(--ink-600);
   font-size: 12px;
   font-weight: 800;
@@ -5234,7 +5376,7 @@ button.card:active {
 }
 
 .ob-impact-grid button {
-  min-height: 28px;
+  min-height: 44px;
   color: var(--ink-500);
   font-size: 8.5px;
   font-weight: 800;
@@ -6530,7 +6672,7 @@ button.card:active {
 }
 
 .page.onboarding .ob-impact-grid button {
-  min-height: 36px;
+  min-height: 44px;
   flex: 1;
   color: var(--ob-muted);
   background: transparent;
@@ -6951,23 +7093,24 @@ button.card:active {
 }
 
 .page.onboarding .ob-appbar-mark {
-  width: 42px;
-  height: 42px;
+  width: 44px;
+  height: 44px;
   justify-self: center;
   pointer-events: none;
 }
 
 .page.onboarding .ob-appbar-spacer {
   width: 44px;
-  height: 42px;
+  height: 44px;
 }
 
 .page.onboarding .back-btn,
 .page.onboarding .ob-skip {
-  width: 42px;
-  min-width: 42px;
-  height: 42px;
-  min-height: 42px;
+  /* 44 px tap targets (blind test round 2, L6). */
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+  min-height: 44px;
   padding: 0;
   display: grid;
   place-items: center;
@@ -7543,7 +7686,7 @@ button.card:active {
 .page.onboarding .ob-chip,
 .page.onboarding .ob-chip-grid.wearable .ob-chip {
   width: auto;
-  min-height: 42px;
+  min-height: 44px;
   padding: 7px 9px 7px 11px;
   justify-content: flex-start;
   gap: 7px;
@@ -7888,7 +8031,7 @@ button.card:active {
 }
 
 .page.onboarding .ob-segmented button {
-  min-height: 42px;
+  min-height: 44px;
   color: var(--ink-500);
   background: transparent;
   border: 0;
@@ -7940,7 +8083,7 @@ button.card:active {
 }
 
 .page.onboarding .ob-impact-grid button {
-  min-height: 28px;
+  min-height: 44px;
   color: var(--ink-500);
   background: var(--paper-150);
   border: 0;
@@ -8702,4 +8845,27 @@ button.card:active {
   .today-page .phase-hero.enter-previous {
     animation: none;
   }
+}
+
+/*
+ * Blind test round 2, L4: on the first screen of Today, "Log period" sat at the
+ * bottom edge, under the tab bar. On phone heights the hero now gives way, so the
+ * quick actions show in full above the tab bar.
+ */
+@media (max-height: 940px) {
+  .today-page .phase-hero {
+    min-height: 244px;
+    padding-top: 28px;
+  }
+}
+
+@media (max-height: 760px) {
+  .today-page .phase-hero {
+    min-height: 212px;
+    padding-top: 22px;
+  }
+}
+
+.today-quick-actions {
+  scroll-margin-bottom: 24px;
 }

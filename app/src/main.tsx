@@ -1,6 +1,7 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App'
+import { PublikGate } from './components/PublikGate'
 import { StartupErrorBoundary } from './components/StartupErrorBoundary'
 import { initializeNativeRuntime } from './native/runtime'
 import { Onboarding } from './screens/Onboarding'
@@ -33,7 +34,10 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           }}
         />
       ) : (
-        <App />
+        // Sign in with publik runs first, before onboarding, the PIN lock and the tabs (lib/publik.ts).
+        <PublikGate>
+          <App />
+        </PublikGate>
       )}
     </StartupErrorBoundary>
   </React.StrictMode>,

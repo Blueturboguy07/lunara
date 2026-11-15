@@ -43,6 +43,14 @@ vi.mock('../db/schema', () => ({
     publikCostSentence: 'publikCostSentence',
     publikCardSeen: 'publikCardSeen',
     publikDisclosureVersion: 'publikDisclosureVersion',
+    publikChoice: 'publikChoice',
+    publikTelemetryId: 'publikTelemetryId',
+    publikUsage: 'publikUsage',
+    publikPrepaidLevel: 'publikPrepaidLevel',
+    publikAiProviders: 'publikAiProviders',
+    aiProvider: 'aiProvider',
+    aiModel: 'aiModel',
+    aiBaseUrl: 'aiBaseUrl',
   },
   getSetting: async (key: string) => settings.store.get(key),
   setSetting: async (key: string, value: string) => {
@@ -56,7 +64,6 @@ vi.mock('../db/schema', () => ({
 
 const build = vi.hoisted(() => ({ token: 'pat_lunara_' + 'a'.repeat(32) }))
 vi.mock('./publikBuild', () => ({
-  PUBLIK_APP_TOKEN_PLACEHOLDER: 'pat_lunara_REPLACE_ME',
   PUBLIK_BUILD: {
     appSlug: 'lunara',
     appVersion: '0.2.0',
@@ -71,7 +78,7 @@ vi.mock('./publikBuild', () => ({
   publikBuildAvailable: () => /^pat_lunara_[a-z0-9]{32}$/.test(build.token),
 }))
 
-import { disconnectPublik, fetchPublikWallet, provisionPublik, publikAvailable, publikEndpoint, PublikApiError } from './publik'
+import { activeAiProvider, applyChoiceToAi, cachedAiProviders, disconnectPublik, fetchPublikWallet, provisionPublik, publikAvailable, publikEndpoint, PublikApiError, publikStatusLine } from './publik'
 
 type Call = { url: string; init: RequestInit | undefined }
 
@@ -165,7 +172,7 @@ describe('provisionPublik (CONTRACT §3.2)', () => {
     const body = JSON.parse(String(calls[0].init?.body))
     expect(body.app_token).toBe(build.token)
     expect(body.app_slug).toBe('lunara')
-    expect(body.app_version).toBe('0.2.0')
+    expect(body.app_version).toBe('0.2.7') // APP_VERSION, the module's literal
     expect(body.os).toBe('ios')
     expect(body.arch).toBeNull()
     expect(body.device_name).toBe('iPhone')
@@ -291,7 +298,7 @@ describe('provisionPublik (CONTRACT §3.2)', () => {
     const fetchImpl = (async () => {
       throw new Error('Could not reach the AI provider. Check your network connection.')
     }) as unknown as typeof fetch
-    await expect(provisionPublik({ fetchImpl })).rejects.toMatchObject({ kind: 'unreachable', message: expect.stringContaining('Nothing is being charged') })
+    await expect(provisionPublik({ fetchImpl })).rejects.toMatchObject({ kind: 'unreachable', message: expect.stringContaining('Nothing is used from your plan') })
   })
 
   it('a 429 from the mint surfaces as rate_limited and writes nothing', async () => {
@@ -319,9 +326,11 @@ describe('fetchPublikWallet', () => {
           add_credit_url: 'https://publikhq.com/dashboard/api/add',
           top_up_url: 'https://publikhq.com/claim/HK7F-2QWD',
           base_url: 'https://publikhq.com/api/v1',
+          ai_providers: ['OpenRouter', 'Amazon Web Services', 'OpenAI', 'Google'],
         }),
     ])
     const wallet = await fetchPublikWallet(fetchImpl)
+    expect(wallet.aiProviders).toEqual(['OpenRouter', 'Amazon Web Services', 'OpenAI', 'Google'])
     expect(calls[0].url).toBe('https://preview.publikhq.com/api/v1/wallet')
     expect(new Headers(calls[0].init?.headers).get('authorization')).toBe('Bearer pk_live_test')
     expect(wallet.balanceMicros).toBe(0)
@@ -332,6 +341,73 @@ describe('fetchPublikWallet', () => {
     expect(settings.store.get('publikInstallId')).toBe('22222222-2222-4222-8222-222222222222')
     expect(settings.store.get('publikClaimUrl')).toBe('https://publikhq.com/claim/HK7F-2QWD')
     expect(settings.store.get('publikBaseUrl')).toBe('https://publikhq.com/api/v1')
+  })
+
+  it('no ai_providers in the answer: aiProviders is null (the screen names no company)', async () => {
+    vault.store.set('publik-api-key', 'pk_live_test')
+    const { fetchImpl } = fetchSequence([() => json(200, { claim_state: 'claimed', balance_micros: 0 })])
+    expect((await fetchPublikWallet(fetchImpl)).aiProviders).toBeNull()
+  })
+
+  it('keeps the last ai_providers list on this phone for the consent text offline (round 2, M5)', async () => {
+    vault.store.set('publik-api-key', 'pk_live_test')
+    expect(await cachedAiProviders()).toBeNull()
+    const { fetchImpl } = fetchSequence([
+      () => json(200, { claim_state: 'claimed', balance_micros: 0, ai_providers: ['OpenRouter', 'Google'] }),
+      () => json(200, { claim_state: 'claimed', balance_micros: 0 }),
+    ])
+    await fetchPublikWallet(fetchImpl)
+    expect(await cachedAiProviders()).toEqual(['OpenRouter', 'Google'])
+    // An answer without the field keeps the copy.
+    await fetchPublikWallet(fetchImpl)
+    expect(await cachedAiProviders()).toEqual(['OpenRouter', 'Google'])
+  })
+
+  it('prepaid use: plan.kind "pack" reads as "N% left", from the percent of publik or from the level on this phone (round 2, M1)', async () => {
+    vault.store.set('publik-api-key', 'pk_live_test')
+    const pack = (balance: number, extra: Record<string, unknown> = {}) => () =>
+      json(200, {
+        claim_state: 'claimed',
+        balance_micros: balance,
+        plan: { kind: 'pack', label: null },
+        starter: { remaining_micros: 0, expires_at: null },
+        week: { used_micros: 0, budget_micros: null, resets_at: '2026-11-21T00:00:00Z' },
+        used_percent: null,
+        remaining_percent: null,
+        resets_at: null,
+        ...extra,
+      })
+    const { fetchImpl } = fetchSequence([pack(5_000_000), pack(4_000_000), pack(4_000_000, { prepaid_remaining_percent: 63 })])
+    const first = await fetchPublikWallet(fetchImpl)
+    expect(first).toMatchObject({ planKind: 'pack', prepaidLeftPercent: 100 })
+    expect(publikStatusLine(first)).toBe('100% left')
+    const second = await fetchPublikWallet(fetchImpl)
+    expect(publikStatusLine(second)).toBe('80% left')
+    // publik's own number wins once it sends one; no reset day for prepaid use.
+    const third = await fetchPublikWallet(fetchImpl)
+    expect(publikStatusLine(third)).toBe('63% left')
+    expect(JSON.stringify([first, second, third].map((w) => publikStatusLine(w)))).not.toMatch(/reset|\$/)
+    // With publik's field, the level on this phone is not needed any more.
+    expect(settings.store.has('publikPrepaidLevel')).toBe(false)
+  })
+
+  it('GET /wallet prepaid_remaining_percent is the answer: 0-100, and null means no prepaid use (no local count)', async () => {
+    vault.store.set('publik-api-key', 'pk_live_test')
+    const wallet = (extra: Record<string, unknown>) => () =>
+      json(200, { claim_state: 'claimed', balance_micros: 2_000_000, starter: { remaining_micros: 0 }, used_percent: null, remaining_percent: null, resets_at: null, ...extra })
+    const { fetchImpl } = fetchSequence([
+      wallet({ plan: { kind: 'pack' }, prepaid_remaining_percent: 0 }),
+      wallet({ plan: { kind: 'none' }, prepaid_remaining_percent: null }),
+      wallet({ plan: { kind: 'pack' }, prepaid_remaining_percent: 37 }),
+    ])
+    const empty = await fetchPublikWallet(fetchImpl)
+    expect(empty.prepaidLeftPercent).toBe(0)
+    expect(publikStatusLine(empty)).toBe('0% left')
+    const none = await fetchPublikWallet(fetchImpl)
+    expect(none.prepaidLeftPercent).toBeNull()
+    expect(publikStatusLine(none)).toBe('No publik plan yet')
+    expect(settings.store.has('publikPrepaidLevel')).toBe(false)
+    expect(publikStatusLine(await fetchPublikWallet(fetchImpl))).toBe('37% left')
   })
 
   it('throws disconnected without a key and never fetches', async () => {
@@ -365,5 +441,50 @@ describe('disconnectPublik', () => {
     await disconnectPublik(fetchImpl)
     expect(vault.store.has('publik-api-key')).toBe(false)
     expect(settings.store.has('publikInstallId')).toBe(false)
+  })
+})
+
+describe('applyChoiceToAi (blind test round 2, M2)', () => {
+  it('"Use my own AI key" changes no AI setting: no silent Anthropic, no empty key', async () => {
+    settings.store.clear()
+    settings.writes.length = 0
+    vault.writes.length = 0
+    await applyChoiceToAi('own_key')
+    expect(settings.writes).toEqual([])
+    expect(vault.writes).toEqual([])
+    expect(settings.store.has('aiProvider')).toBe(false)
+
+    settings.store.set('aiProvider', 'publik')
+    await applyChoiceToAi('own_key')
+    expect(settings.store.get('aiProvider')).toBe('publik')
+    expect(settings.writes).toEqual([])
+  })
+
+  it('"Use my publik plan" selects publik API', async () => {
+    settings.store.clear()
+    settings.store.set('aiProvider', 'anthropic')
+    await applyChoiceToAi('publik')
+    expect(settings.store.get('aiProvider')).toBe('publik')
+  })
+})
+
+describe('activeAiProvider: one rule for Lunara AI and the Settings row (round 2, L1)', () => {
+  it('publik API in use with no saved provider: the row names publik API, not "add Anthropic key"', async () => {
+    expect(await activeAiProvider()).toBe('publik')
+  })
+
+  it('a saved own provider wins; "Use my own AI key" without a saved key names Anthropic', async () => {
+    settings.store.set('aiProvider', 'openai')
+    expect(await activeAiProvider()).toBe('openai')
+    settings.store.delete('aiProvider')
+    settings.store.set('publikChoice', 'own_key')
+    expect(await activeAiProvider()).toBe('anthropic')
+  })
+
+  it('a saved publik choice on a build without publik API falls back to an own key', async () => {
+    settings.store.set('aiProvider', 'publik')
+    expect(await activeAiProvider()).toBe('publik')
+    build.token = 'pat_lunara_REPLACE_ME'
+    expect(await activeAiProvider()).toBe('anthropic')
   })
 })

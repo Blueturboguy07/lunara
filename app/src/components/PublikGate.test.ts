@@ -1,0 +1,95 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+/** The wall's own promise: a failure is never cached, and a sign-out makes the wall ask again. */
+
+vi.mock('../native/runtime', () => ({ isNative: false, nativePlatform: 'web' }))
+vi.mock('@capacitor/browser', () => ({ Browser: { open: async () => undefined } }))
+
+const gate = vi.hoisted(() => ({
+  results: [] as Array<'fail' | 'pass'>,
+  calls: 0,
+  choice: null as 'publik' | 'own_key' | null,
+  applied: [] as string[],
+}))
+vi.mock('../lib/publik', () => ({
+  applyChoiceToAi: async (choice: string) => {
+    gate.applied.push(choice)
+  },
+  ensureSignedIn: async () => {
+    gate.calls++
+    if (gate.results.shift() === 'fail') throw Object.assign(new Error('Transaction aborted'), { name: 'AbortError' })
+    return { key: 'pk_live_x', wallet: null, choice: gate.choice, chosenNow: gate.choice !== null, offline: false }
+  },
+  gateScreen: (id: string, _w: unknown, note: string | null, message?: string) => ({
+    id,
+    title: 'Sign in with publik',
+    body: message ?? 'publik is not reachable. Check your connection.',
+    note,
+    buttons: [{ action: 'retry', label: 'Retry' }],
+  }),
+  needsSignInOnDemand: async () => false,
+  onPublikSignOut: () => () => undefined,
+  openPublikSheet: () => undefined,
+  openWithoutWall: async () => undefined,
+  problemText: (error: unknown) =>
+    error instanceof Error && error.name === 'AbortError' ? 'Lunara could not read its data on this phone. Tap Retry.' : undefined,
+  signInOnDemand: async () => null,
+}))
+
+import { useApp } from '../state/appStore'
+import { forgetWall, passWall, startWall } from './PublikGate'
+
+beforeEach(() => {
+  forgetWall()
+  gate.results = []
+  gate.calls = 0
+  gate.choice = null
+  gate.applied = []
+  useApp.setState({ assistantOpen: false, aiKeyEntry: false })
+})
+
+describe('the wall never freezes', () => {
+  it('a failed gate is not cached: fixed words (never the raw error) with Retry show, and Retry runs the gate again', async () => {
+    gate.results = ['fail', 'pass']
+    const shown: Array<{ id: string; body: string }> = []
+    const result = await passWall(async (screen) => {
+      shown.push({ id: screen.id, body: screen.body })
+      return 'retry'
+    })
+    expect(result).toMatchObject({ key: 'pk_live_x' })
+    expect(shown).toEqual([{ id: 'unreachable', body: 'Lunara could not read its data on this phone. Tap Retry.' }])
+    expect(JSON.stringify(shown)).not.toContain('Transaction aborted')
+    expect(gate.calls).toBe(2)
+  })
+
+  it('startWall() forgets a failed promise by itself', async () => {
+    gate.results = ['fail', 'pass']
+    await expect(startWall()).rejects.toThrow('Transaction aborted')
+    await expect(startWall()).resolves.toMatchObject({ key: 'pk_live_x' })
+    expect(gate.calls).toBe(2)
+  })
+
+  it('a passed wall is shared; after a sign-out (forgetWall) the gate runs again', async () => {
+    await passWall(async () => 'retry')
+    await passWall(async () => 'retry')
+    expect(gate.calls).toBe(1)
+    forgetWall()
+    await passWall(async () => 'retry')
+    expect(gate.calls).toBe(2)
+  })
+})
+
+describe('"Use my own AI key" on the plan screen (blind test round 2, M2)', () => {
+  it('opens Lunara AI on the key entry', async () => {
+    gate.choice = 'own_key'
+    await passWall(async () => 'retry')
+    expect(useApp.getState()).toMatchObject({ assistantOpen: true, aiKeyEntry: true })
+  })
+
+  it('"Use my publik plan" does not open the key entry', async () => {
+    gate.choice = 'publik'
+    await passWall(async () => 'retry')
+    expect(gate.applied).toEqual(['publik'])
+    expect(useApp.getState()).toMatchObject({ assistantOpen: false, aiKeyEntry: false })
+  })
+})

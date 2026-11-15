@@ -6,8 +6,12 @@
  *
  * HTTP shapes follow ~/publik-api-research/CONTRACT.md §1, §3.2, §5, §11, §12.
  *
- * Copy rule (CONTRACT §1): "publik API", dollars, never tokens, never
- * "credits" as a unit, never the provider's name.
+ * Copy rule (CONTRACT §1): "publik API", never tokens, never "credits" as a
+ * unit, never the provider's name. Founder rule (Nov 14 2026): the app shows
+ * no amount of money for AI use anywhere. AI use shows only as a percent of
+ * the plan limit ("62% of your plan used · resets Monday"), or as "Plan
+ * active" / "Plan limit reached" when publik gives no limit to compare with.
+ * src/lib/noMoneyShown.test.ts fails when a text has "$" and a digit.
  */
 import { PUBLIK_BUILD } from './publikBuild'
 
@@ -24,7 +28,7 @@ export const DEFAULT_PUBLIK_MODELS: PublikModelMap = {
 }
 
 export const PUBLIK_MODELS: ReadonlyArray<{ tier: PublikTier; id: string; label: string }> = [
-  { tier: 'fast', id: DEFAULT_PUBLIK_MODELS.fast, label: 'Fast · lowest cost' },
+  { tier: 'fast', id: DEFAULT_PUBLIK_MODELS.fast, label: 'Fast · uses the least of your plan' },
   { tier: 'balanced', id: DEFAULT_PUBLIK_MODELS.balanced, label: 'Balanced · recommended' },
   { tier: 'smart', id: DEFAULT_PUBLIK_MODELS.smart, label: 'Most capable · needs a linked account' },
 ]
@@ -41,6 +45,10 @@ export const DEFAULT_PUBLIK_ENDPOINT: PublikEndpoint = {
   models: DEFAULT_PUBLIK_MODELS,
 }
 
+/**
+ * What publik reports about AI use. The micros fields are for the app's own
+ * arithmetic only: the screens never show them (planUseFrom turns them into a percent).
+ */
 export interface PublikUsage {
   balanceMicros: number | null
   weekUsedMicros: number | null
@@ -48,9 +56,22 @@ export interface PublikUsage {
   weekResetsAt: string | null
   starterRemainingMicros: number | null
   claimState: PublikClaimState | null
-  /** Non-streaming responses carry the settled charge (CONTRACT §11.6). */
+  /** Non-streaming responses carry the settled charge (CONTRACT §11.6). Never shown. */
   chargeMicros: number | null
+  /** GET /api/v1/wallet `used_percent`, `remaining_percent` and `resets_at`, when publik sends them. */
+  usedPercent: number | null
+  remainingPercent: number | null
+  resetsAt: string | null
+  /** GET /api/v1/wallet `plan.kind`: a plan ("plan"), prepaid use only ("pack"), or neither ("none"); null when unknown. */
+  planKind: PublikPlanKind | null
+  /**
+   * Prepaid use (packs and grant money) left, 0 to 100: `prepaid_remaining_percent` when publik
+   * sends it, else prepaidLeft() on this phone. Null when there is no prepaid use. Prepaid use never resets.
+   */
+  prepaidLeftPercent: number | null
 }
+
+export type PublikPlanKind = 'plan' | 'pack' | 'none'
 
 export type PublikErrorKind = 'needs_credit' | 'disconnected' | 'rate_limited' | 'unreachable' | 'rejected'
 
@@ -67,42 +88,221 @@ export class PublikApiError extends Error {
     readonly link: string | null = null,
     readonly retryAfterSeconds: number | null = null,
     readonly reprovision: boolean | null = null,
+    /** The plan limit is reached (402 on a linked account, 429 week_budget_reached): the screen shows planLimitText(). */
+    readonly planLimit: boolean = false,
+    /** When the plan limit resets, if publik said so. */
+    readonly resetsAt: string | null = null,
   ) {
     super(message)
     this.name = 'PublikApiError'
   }
 }
 
-/** Formats micros as "$0.05". Never prints a unit other than dollars. */
-export function dollars(micros: number): string {
-  return `$${(micros / 1_000_000).toFixed(2)}`
-}
-
 /**
- * The one free thing publik API gives (publik migration 0059): $0.05 of use,
+ * The one free thing publik API gives (publik migration 0059), in micros:
  * paid once per publik account when a phone is first linked to it, or when
  * an install is minted already bound to the signed-in account. A new,
- * unlinked install starts at $0.00, so every metered call answers 402 until
- * the phone is linked, a plan or pack is bought, or the user adds a key.
+ * unlinked install starts empty, so every metered call answers 402 until the
+ * phone is linked, a plan or pack is bought, or the user adds a key. The app
+ * never shows this amount.
  */
 export const PUBLIK_LINK_STARTER_MICROS = 50_000
 
-/** Appended to the local cost sentence while the gateway's own one is not known yet. */
-export const PUBLIK_STARTS_AT_ZERO = `A new phone starts at $0.00 and no card is asked for. Linking your publik account gives ${dollars(PUBLIK_LINK_STARTER_MICROS)} of free use, once.`
+/** How Lunara AI is paid for, in words with no amount of money. */
+export const PUBLIK_PLAN_SENTENCE =
+  'Lunara AI uses your publik plan. Lunara shows how much of the plan limit you used, as a percent, and when it resets.'
 
-/** A $0.00 balance on a phone that is not linked yet. */
-const LINK_FOR_FREE_USE = `$0.00 · link this phone for ${dollars(PUBLIK_LINK_STARTER_MICROS)} of free use`
+/** Where purchase links are not allowed (lib/storefront.ts): the only words about getting a plan. */
+export const NO_LINK_PLAN_TEXT = 'To get a plan, search for "publik" on Google.'
+
+/** True when a text names an amount of money: a dollar sign and a digit, or a number with "USD" or "dollars". */
+export function namesMoney(text: string): boolean {
+  return /\$\s?\d|\d\s?(usd|dollars?)\b/i.test(text)
+}
+
+/** A text from the server, or null when it names an amount of money: the app never shows one. */
+export function withoutMoney(text: string | null | undefined): string | null {
+  const value = typeof text === 'string' ? text.trim() : ''
+  return value && !namesMoney(value) ? value : null
+}
 
 /**
- * The one-sentence justification (CONTRACT §12.1b). Verbatim from
- * ~/publik/lib/publik-api/why-it-costs.ts `whyItCostsSentence('Lunara')`;
- * the install response's `disclosure.cost` replaces it once known.
+ * AI use as a share, never as money (blind test round 2, M1):
+ *   plan     "62% of your plan used · resets Monday" (a bar of the share used)
+ *   prepaid  "80% left" (a bar of the share left; prepaid use has no reset day)
+ *   free     "60% of your free use left" (the free use for linking the account)
+ *   none     no plan, no prepaid use, no free use left
  */
-export const PUBLIK_WHY_IT_COSTS =
-  "The AI model behind Lunara is run by a provider that charges per use; publik passes that on at half the provider's list price, nothing is charged behind your back, and you can see every call on your dashboard."
+export interface PlanUse {
+  kind: 'plan' | 'prepaid' | 'free' | 'none' | 'unknown'
+  /** Whole percent of the plan limit used (0 to 100); plan only, null when publik gave no limit. */
+  usedPercent: number | null
+  /** Whole percent left (0 to 100); prepaid and free use only. */
+  leftPercent: number | null
+  limitReached: boolean
+  /** When the plan limit resets; null for prepaid and free use, which never reset. */
+  resetsAt: string | null
+}
 
-export const PUBLIK_DATA_PATH =
-  'Only your message and the tracker categories you tick go through publik’s servers to a shared model account. publik never trains on them and does not store them. Your cycle history stays on this phone.'
+const finite = (value: unknown): number | null => (typeof value === 'number' && Number.isFinite(value) ? value : null)
+
+/**
+ * The plan use from what publik reported: `used_percent`, else `remaining_percent`,
+ * else the week's used and limit values. With none of them, only "limit reached"
+ * (nothing left) or not.
+ */
+export function planUseFrom(usage: PublikUsage | null): PlanUse | null {
+  if (!usage) return null
+  const used = finite(usage.usedPercent)
+  const remaining = finite(usage.remainingPercent)
+  const weekUsed = finite(usage.weekUsedMicros)
+  const weekLimit = finite(usage.weekBudgetMicros)
+  const raw =
+    used !== null ? used : remaining !== null ? 100 - remaining : weekUsed !== null && weekLimit !== null && weekLimit > 0 ? (weekUsed / weekLimit) * 100 : null
+  const balance = finite(usage.balanceMicros)
+  const kind = usage.planKind
+  if (raw !== null && kind !== 'pack' && kind !== 'none') {
+    const limitReached = raw >= 100
+    // Floor: the line says 100% only when the limit is really reached.
+    const percent = Math.min(limitReached ? 100 : 99, Math.max(0, Math.floor(raw)))
+    return { kind: 'plan', usedPercent: percent, leftPercent: null, limitReached, resetsAt: usage.resetsAt ?? usage.weekResetsAt }
+  }
+  if (kind === 'plan') {
+    return { kind: 'plan', usedPercent: null, leftPercent: null, limitReached: balance !== null && balance <= 0, resetsAt: usage.resetsAt ?? usage.weekResetsAt }
+  }
+  const prepaid = finite(usage.prepaidLeftPercent)
+  if (prepaid !== null || kind === 'pack') {
+    const left = prepaid === null ? null : Math.round(Math.min(100, Math.max(0, prepaid)))
+    return { kind: 'prepaid', usedPercent: null, leftPercent: left, limitReached: left === 0 || (left === null && balance !== null && balance <= 0), resetsAt: null }
+  }
+  const starter = finite(usage.starterRemainingMicros)
+  if (starter !== null && starter > 0) {
+    return { kind: 'free', usedPercent: null, leftPercent: leftShare(starter, PUBLIK_LINK_STARTER_MICROS), limitReached: false, resetsAt: null }
+  }
+  if (kind === 'none') return { kind: 'none', usedPercent: null, leftPercent: null, limitReached: balance === null || balance <= 0, resetsAt: null }
+  // An older publik without plan.kind: no reset day without a share to go with it.
+  return { kind: 'unknown', usedPercent: null, leftPercent: null, limitReached: balance !== null && balance <= 0, resetsAt: null }
+}
+
+/** Whole percent of `level` that `left` is, 0 to 100; at least 1 while anything is left. */
+function leftShare(left: number, level: number): number {
+  if (left <= 0) return 0
+  const share = (left / Math.max(level, left)) * 100
+  return Math.max(1, Math.min(100, Math.floor(share)))
+}
+
+/**
+ * Prepaid use left as a percent until publik sends `prepaid_remaining_percent`: the prepaid
+ * use now against its level right after the last top-up, like a battery (publik's own rule,
+ * migration 0113). This phone keeps the level: it is the highest prepaid amount seen since
+ * the amount last went up. The first reading on a phone is 100%. Never shown as money.
+ */
+export function prepaidLeft(
+  prepaidMicros: number | null,
+  previous: { level: number; last: number } | null,
+): { percent: number | null; memory: { level: number; last: number } | null } {
+  if (prepaidMicros === null || !Number.isFinite(prepaidMicros)) return { percent: null, memory: previous }
+  const now = Math.max(0, prepaidMicros)
+  if (now <= 0) return { percent: previous ? 0 : null, memory: previous ? { level: previous.level, last: 0 } : null }
+  // A top-up (the amount went up since the last reading) starts a new level.
+  const level = !previous || now > previous.last ? now : Math.max(previous.level, now)
+  return { percent: leftShare(now, level), memory: { level, last: now } }
+}
+
+const DAY_MS = 86_400_000
+
+/** "today", "tomorrow", a weekday ("Monday") within a week, else "on November 21". Null when unknown or past. */
+export function resetsLabel(resetsAt: string | null, now: Date = new Date()): string | null {
+  if (!resetsAt) return null
+  const at = new Date(resetsAt)
+  if (Number.isNaN(at.getTime())) return null
+  const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+  const days = Math.round((startOfDay(at) - startOfDay(now)) / DAY_MS)
+  if (days < 0) return null
+  if (days === 0) return 'today'
+  if (days === 1) return 'tomorrow'
+  if (days < 7) return at.toLocaleDateString('en-US', { weekday: 'long' })
+  return `on ${at.toLocaleDateString('en-US', { month: 'long', day: 'numeric' })}`
+}
+
+/** The plan-limit message: what happened, when it resets, how to get more (storefront rule), and "use your own key". */
+export function planLimitText(resetsAt: string | null, purchaseLinks: boolean, now: Date = new Date()): string {
+  const when = resetsLabel(resetsAt, now)
+  const first = `Your publik plan limit is reached. ${when ? `It resets ${when}.` : 'It resets at the start of the next plan period.'}`
+  return purchaseLinks ? `${first} Add a plan or pack at the link below, or use your own key.` : `${first} ${NO_LINK_PLAN_TEXT} Or use your own key.`
+}
+
+/** A phone that is not linked to a publik account yet (no plan to use). */
+export function notLinkedText(purchaseLinks: boolean): string {
+  return purchaseLinks
+    ? 'This phone is not linked to a publik plan yet. Link it at the link below, or use your own key.'
+    : `This phone is not linked to a publik plan yet. ${NO_LINK_PLAN_TEXT} Or use your own key.`
+}
+
+/** A usage record from a balance only (POST /installs): enough for "Plan active" or "Plan limit reached". */
+export function usageFromBalance(balanceMicros: number | null, claimState: PublikClaimState | null): PublikUsage {
+  return {
+    balanceMicros,
+    weekUsedMicros: null,
+    weekBudgetMicros: null,
+    weekResetsAt: null,
+    starterRemainingMicros: null,
+    claimState,
+    chargeMicros: null,
+    usedPercent: null,
+    remainingPercent: null,
+    resetsAt: null,
+    planKind: null,
+    prepaidLeftPercent: null,
+  }
+}
+
+/**
+ * GET /api/v1/wallet `ai_providers`: the companies publik sends AI requests to (for example
+ * "OpenRouter", "Amazon Web Services"). Plain names only, at most 12; null when publik sent none.
+ */
+export function aiProvidersFrom(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null
+  const names = value
+    .filter((name): name is string => typeof name === 'string')
+    .map((name) => name.replace(/\s+/g, ' ').trim())
+    .filter((name) => name.length > 0 && name.length <= 60 && /^[\p{L}\p{N} .,&()'’-]+$/u.test(name))
+  const unique = [...new Set(names)].slice(0, 12)
+  return unique.length ? unique : null
+}
+
+/** "A", "A or B", "A, B or C". */
+export function providerList(names: readonly string[]): string {
+  if (names.length <= 1) return names[0] ?? ''
+  return `${names.slice(0, -1).join(', ')} or ${names.at(-1)}`
+}
+
+/** Who answers on publik: publik's true list when the wallet sent it, else the plain words with no company named. */
+export function publikProviderWords(providers?: readonly string[] | null): string {
+  return providers?.length ? `the AI provider that answers: ${providerList(providers)}` : 'the AI provider that answers'
+}
+
+/** Where an AI chat message goes on publik API. The agreement screen (lib/healthConsent.ts) lists the exact data. */
+export function publikDataPath(providers?: readonly string[] | null): string {
+  return `AI chat is optional and asks before it sends anything. Then your question, the earlier messages in this chat and an anonymized summary of the tracker data you tick go through publik’s servers to ${publikProviderWords(providers)}. It has no name, email or birth date. publik does not store the content of your messages or answers, and does not use it for ads, analytics, training, or sale. It keeps billing records (model, token counts, cost) without content.`
+}
+
+/** The same, before Lunara has read publik's provider list. */
+export const PUBLIK_DATA_PATH = publikDataPath(null)
+
+/**
+ * The link button under a publik error ("Add a plan or pack"): only on the US App Store storefront.
+ * An unknown storefront (the simulator, Android, a browser build) gets no button; the text says
+ * NO_LINK_PLAN_TEXT instead.
+ */
+export function publikErrorLinkLabel(
+  failure: { kind: PublikErrorKind; link: string | null },
+  claimState: PublikClaimState | null,
+  purchaseLinks: boolean,
+): string | null {
+  if (!purchaseLinks || !failure.link) return null
+  return failure.kind === 'needs_credit' || failure.kind === 'rate_limited' ? publikLinkButtonLabel(claimState) : null
+}
 
 /** The primary button while anonymous (CONTRACT §12.1c) and once claimed (§12.2). */
 export function publikLinkButtonLabel(claimState: PublikClaimState | null): string {
@@ -161,6 +361,11 @@ export function readPublikUsage(headers: Headers): PublikUsage {
     starterRemainingMicros: int('x-publik-starter-remaining'),
     claimState: claim === 'anonymous' || claim === 'claimed' ? claim : null,
     chargeMicros: int('x-publik-charge-micros'),
+    usedPercent: null,
+    remainingPercent: null,
+    resetsAt: null,
+    planKind: null,
+    prepaidLeftPercent: null,
   }
 }
 
@@ -173,18 +378,18 @@ interface PublikErrorBody {
     claim_url?: string
     add_credit_url?: string
     reprovision?: boolean
+    resets_at?: string
   }
 }
 
-const UNREACHABLE = 'publik API is unreachable right now. Nothing is being charged. Try again in a minute, or use your own key.'
+const UNREACHABLE = 'publik API is unreachable right now. Nothing is used from your plan. Try again in a minute, or use your own key.'
 
 /**
  * Maps a non-2xx gateway response to a typed error. The body is read only on
  * the publik path: the envelope is publik's own and carries no echoed
  * credential or health context, which is why assistant.ts refuses to read
- * vendor bodies. Only a 402's `message` is shown verbatim — it carries the
- * justification the contract requires (§12.3); every other status renders
- * fixed copy.
+ * vendor bodies. Every status renders fixed copy: a server message could name
+ * an amount of money, and the app never shows one.
  */
 export async function publikErrorFrom(response: Response): Promise<PublikApiError> {
   let body: PublikErrorBody = {}
@@ -202,14 +407,12 @@ export async function publikErrorFrom(response: Response): Promise<PublikApiErro
 
   switch (response.status) {
     case 402: {
-      const fallback = claimed
-        ? 'Not enough publik balance for this request. Add a plan or a pack at the link below, or use your own key.'
-        : `Not enough publik balance on this phone. Link it to your publik account at the link below: linking gives ${dollars(PUBLIK_LINK_STARTER_MICROS)} of free use, once, and a plan or a pack takes it from there. Or use your own key.`
-      const message =
-        (err.type === 'insufficient_credit' || err.type === 'model_requires_claim') && typeof err.message === 'string' && err.message.trim()
-          ? err.message.trim()
-          : fallback
-      return new PublikApiError('needs_credit', message, topUp)
+      const resetsAt = typeof err.resets_at === 'string' ? err.resets_at : null
+      if (err.type === 'model_requires_claim') {
+        return new PublikApiError('needs_credit', 'The most capable model needs a publik account. Link this phone at the link below, pick another model, or use your own key.', topUp)
+      }
+      if (!claimed) return new PublikApiError('needs_credit', notLinkedText(true), topUp)
+      return new PublikApiError('needs_credit', planLimitText(resetsAt, true), topUp, null, null, true, resetsAt)
     }
     case 401: {
       if (err.type === 'key_revoked') {
@@ -235,20 +438,15 @@ export async function publikErrorFrom(response: Response): Promise<PublikApiErro
         err.reprovision === true,
       )
     case 429: {
-      const capped = err.type === 'daily_cap_reached' || err.type === 'week_budget_reached'
-      return new PublikApiError(
-        'rate_limited',
-        err.type === 'daily_cap_reached'
-          ? 'publik API has reached today’s spending cap for this phone. It resets at midnight UTC.'
-          : err.type === 'week_budget_reached'
-            ? 'publik API has reached this week’s plan budget. It resets at the start of the next weekly window.'
-            : 'publik API is busy. Try again shortly.',
-        capped ? topUp : null,
-        retryAfter,
-      )
+      const resetsAt = typeof err.resets_at === 'string' ? err.resets_at : null
+      if (err.type === 'week_budget_reached') return new PublikApiError('rate_limited', planLimitText(resetsAt, true), topUp, retryAfter, null, true, resetsAt)
+      if (err.type === 'daily_cap_reached') {
+        return new PublikApiError('rate_limited', 'publik API has reached today’s use limit for this phone. It resets at midnight UTC.', topUp, retryAfter)
+      }
+      return new PublikApiError('rate_limited', 'publik API is busy. Try again shortly.', null, retryAfter)
     }
     default:
-      return new PublikApiError('unreachable', `publik API is unreachable right now (${response.status}). Nothing is being charged. Try again in a minute, or use your own key.`, null, retryAfter)
+      return new PublikApiError('unreachable', `publik API is unreachable right now (${response.status}). Nothing is used from your plan. Try again in a minute, or use your own key.`, null, retryAfter)
   }
 }
 
@@ -256,30 +454,42 @@ export function publikUnreachable(): PublikApiError {
   return new PublikApiError('unreachable', UNREACHABLE)
 }
 
-/** The single status sentence the settings row and the assistant header show. */
-export function publikStatusLine(usage: PublikUsage | null): string {
-  if (!usage || usage.balanceMicros === null) return 'Ready'
-  const left = `${dollars(usage.balanceMicros)} left`
-  if (usage.claimState === 'anonymous') {
-    // A new install starts at $0.00: never call an empty balance "free usage".
-    if (usage.balanceMicros <= 0) return LINK_FOR_FREE_USE
-    if (usage.starterRemainingMicros !== null) return `${left} of free use · link this phone to add more`
+/**
+ * The one status line of Settings, the AI header and the first-run card: the plan use as a
+ * percent ("62% of your plan used · resets Monday"), else "Plan active" or "Plan limit
+ * reached". Never an amount of money, also not on the US storefront.
+ */
+export function publikStatusLine(usage: PublikUsage | null, now: Date = new Date()): string {
+  const use = planUseFrom(usage)
+  if (!use) return 'Ready'
+  if (use.kind !== 'plan' && use.leftPercent === null && usage?.claimState === 'anonymous') return 'Not linked to a publik plan yet'
+  switch (use.kind) {
+    case 'plan': {
+      const when = resetsLabel(use.resetsAt, now)
+      const tail = when ? ` · resets ${when}` : ''
+      if (use.limitReached) return `Plan limit reached${tail}`
+      return use.usedPercent !== null ? `${use.usedPercent}% of your plan used${tail}` : `Plan active${tail}`
+    }
+    case 'prepaid':
+      // Prepaid use never resets: no reset day.
+      return use.leftPercent !== null ? `${use.leftPercent}% left` : use.limitReached ? 'No prepaid use left' : 'Prepaid use active'
+    case 'free':
+      return `${use.leftPercent}% of your free use left`
+    case 'none':
+      return 'No publik plan yet'
+    default:
+      return use.limitReached ? 'Plan limit reached' : 'Plan active'
   }
-  if (usage.weekBudgetMicros !== null && usage.weekUsedMicros !== null) {
-    return `${left} · this week ${dollars(usage.weekUsedMicros)} of ${dollars(usage.weekBudgetMicros)}`
-  }
-  return usage.weekUsedMicros !== null ? `${left} · ${dollars(usage.weekUsedMicros)} used this week` : left
 }
 
-/** The balance line of the first-run card (CONTRACT §12.1a). */
-export function publikBalanceLine(balanceMicros: number | null, claimState: PublikClaimState | null): string {
-  if (balanceMicros === null) return 'Checking your publik balance…'
-  if (claimState === 'claimed') return `${dollars(balanceMicros)} of publik usage available`
-  return balanceMicros > 0 ? `${dollars(balanceMicros)} of free use` : LINK_FOR_FREE_USE
-}
-
-/** Adults only: the AI companion, and publik with it, is hidden under 18 everywhere. */
+/**
+ * Adults only: the AI companion, and publik with it, is hidden under 18 everywhere.
+ * Lunara knows only the birth year. A person born in year Y can still be 17 on
+ * the last day of Y+18, so the rule is: the current year minus the birth year
+ * is 19 or more. Then the person is 18 or older on every day of the year. (An
+ * 18-year-old born late in the year waits until January 1.)
+ */
 export function isAdultBirthYear(birthYear: string | undefined, now = new Date()): boolean {
   if (!birthYear || !/^\d{4}$/.test(birthYear)) return false
-  return now.getFullYear() - Number(birthYear) >= 18
+  return now.getFullYear() - Number(birthYear) >= 19
 }
