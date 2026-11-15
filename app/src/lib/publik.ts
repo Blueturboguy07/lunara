@@ -771,10 +771,15 @@ export async function fetchPublikWallet(fetchImpl: FetchLike = providerFetch): P
   const kind = data.plan?.kind
   const planKind: PublikPlanKind | null = kind === 'plan' || kind === 'pack' || kind === 'none' ? kind : null
   const starter = data.starter?.remaining_micros ?? 0
-  // Prepaid use (packs and grant money) as a percent: publik's number when it sends one, else
-  // the level this phone keeps (prepaidLeft). Never an amount of money on a screen.
+  // Prepaid use (packs and grant money) as a percent. GET /wallet sends `prepaid_remaining_percent`
+  // (0-100, or null when there is no prepaid use): that number is the answer, also null.
+  // Only an older publik without the field falls back to the level this phone keeps (prepaidLeft).
+  // Never an amount of money on a screen.
+  const serverSendsPrepaid = Object.prototype.hasOwnProperty.call(data, 'prepaid_remaining_percent')
   let prepaidLeftPercent = percentOrNull(data.prepaid_remaining_percent)
-  if (prepaidLeftPercent === null && claimState === 'claimed' && typeof balance === 'number') {
+  if (serverSendsPrepaid) {
+    await removeSetting(SK.publikPrepaidLevel).catch(() => undefined)
+  } else if (claimState === 'claimed' && typeof balance === 'number') {
     const previous = await readPrepaidMemory()
     const prepaid = prepaidLeft(Math.max(0, balance - starter), previous)
     prepaidLeftPercent = prepaid.percent

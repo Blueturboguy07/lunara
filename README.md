@@ -99,9 +99,9 @@ It shows only the share of the plan limit you used, with a bar, for example
 "62% of your plan used · resets Monday" (from `used_percent`,
 `remaining_percent` and `resets_at` of `GET /api/v1/wallet`, else from the
 week's used and limit values). Prepaid use has no reset day: it shows "80%
-left" with a bar (from `prepaid_remaining_percent` when publik sends it; until
-then Lunara counts the share on the phone against the prepaid amount after the
-last top-up). The free use shows "60% of your free use left". When publik gives
+left" with a bar (from `prepaid_remaining_percent` of `GET /api/v1/wallet`;
+only with an older publik that does not send it, Lunara counts the share on
+the phone against the prepaid amount after the last top-up). The free use shows "60% of your free use left". When publik gives
 no number, it shows "Plan active" or "Plan limit reached". When the limit is reached, AI
 chat says so in plain words, says when the plan resets, and offers "Use my own
 key" (`app/src/lib/publikApi.ts`; `app/src/lib/noMoneyShown.test.ts` fails when

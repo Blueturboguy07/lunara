@@ -387,6 +387,27 @@ describe('fetchPublikWallet', () => {
     const third = await fetchPublikWallet(fetchImpl)
     expect(publikStatusLine(third)).toBe('63% left')
     expect(JSON.stringify([first, second, third].map((w) => publikStatusLine(w)))).not.toMatch(/reset|\$/)
+    // With publik's field, the level on this phone is not needed any more.
+    expect(settings.store.has('publikPrepaidLevel')).toBe(false)
+  })
+
+  it('GET /wallet prepaid_remaining_percent is the answer: 0-100, and null means no prepaid use (no local count)', async () => {
+    vault.store.set('publik-api-key', 'pk_live_test')
+    const wallet = (extra: Record<string, unknown>) => () =>
+      json(200, { claim_state: 'claimed', balance_micros: 2_000_000, starter: { remaining_micros: 0 }, used_percent: null, remaining_percent: null, resets_at: null, ...extra })
+    const { fetchImpl } = fetchSequence([
+      wallet({ plan: { kind: 'pack' }, prepaid_remaining_percent: 0 }),
+      wallet({ plan: { kind: 'none' }, prepaid_remaining_percent: null }),
+      wallet({ plan: { kind: 'pack' }, prepaid_remaining_percent: 37 }),
+    ])
+    const empty = await fetchPublikWallet(fetchImpl)
+    expect(empty.prepaidLeftPercent).toBe(0)
+    expect(publikStatusLine(empty)).toBe('0% left')
+    const none = await fetchPublikWallet(fetchImpl)
+    expect(none.prepaidLeftPercent).toBeNull()
+    expect(publikStatusLine(none)).toBe('No publik plan yet')
+    expect(settings.store.has('publikPrepaidLevel')).toBe(false)
+    expect(publikStatusLine(await fetchPublikWallet(fetchImpl))).toBe('37% left')
   })
 
   it('throws disconnected without a key and never fetches', async () => {
